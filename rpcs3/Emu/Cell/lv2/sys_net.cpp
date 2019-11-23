@@ -31,9 +31,9 @@ void fmt_class_string<sys_net_error>::format(std::string& out, u64 arg)
 {
 	format_enum(out, arg, [](auto error)
 	{
-		switch (error)
+		switch (s32 _error = error)
 		{
-#define SYS_NET_ERROR_CASE(x) case -x: return #x
+#define SYS_NET_ERROR_CASE(x) case -x: return "-" #x; case x: return #x
 		SYS_NET_ERROR_CASE(SYS_NET_ENOENT);
 		SYS_NET_ERROR_CASE(SYS_NET_EINTR);
 		SYS_NET_ERROR_CASE(SYS_NET_EBADF);
@@ -45,9 +45,8 @@ void fmt_class_string<sys_net_error>::format(std::string& out, u64 arg)
 		SYS_NET_ERROR_CASE(SYS_NET_EMFILE);
 		SYS_NET_ERROR_CASE(SYS_NET_ENOSPC);
 		SYS_NET_ERROR_CASE(SYS_NET_EPIPE);
-		case -SYS_NET_EAGAIN: 
+		SYS_NET_ERROR_CASE(SYS_NET_EAGAIN);
 			static_assert(SYS_NET_EWOULDBLOCK == SYS_NET_EAGAIN);
-			return "SYS_NET_EAGAIN/WOULDBLOCK";
 		SYS_NET_ERROR_CASE(SYS_NET_EINPROGRESS);
 		SYS_NET_ERROR_CASE(SYS_NET_EALREADY);
 		SYS_NET_ERROR_CASE(SYS_NET_EDESTADDRREQ);
@@ -402,6 +401,11 @@ error_code sys_net_bnet_accept(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr>
 
 	if (!sock.ret && result)
 	{
+		if (result == SYS_NET_EWOULDBLOCK)
+		{
+			return not_an_error(-result);
+		}
+
 		return -sys_net_error{result};
 	}
 
@@ -629,6 +633,11 @@ error_code sys_net_bnet_connect(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr
 
 	if (!sock.ret && result)
 	{
+		if (result == SYS_NET_EWOULDBLOCK || result == SYS_NET_EINPROGRESS)
+		{
+			return not_an_error(-result);
+		}
+
 		return -sys_net_error{result};
 	}
 
@@ -1064,6 +1073,11 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 
 	if (!sock.ret && result)
 	{
+		if (result == SYS_NET_EWOULDBLOCK)
+		{
+			return not_an_error(-result);
+		}
+
 		return -result;
 	}
 
@@ -1233,6 +1247,11 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 
 	if (!sock.ret && result)
 	{
+		if (result == SYS_NET_EWOULDBLOCK)
+		{
+			return not_an_error(-result);
+		}
+
 		return -result;
 	}
 
