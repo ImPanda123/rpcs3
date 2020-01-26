@@ -144,7 +144,7 @@ namespace vk
 	VkSampler null_sampler();
 	image_view* null_image_view(vk::command_buffer&);
 	image* get_typeless_helper(VkFormat format, u32 requested_width, u32 requested_height);
-	buffer* get_scratch_buffer();
+	buffer* get_scratch_buffer(u32 min_required_size = 0);
 	data_heap* get_upload_heap();
 
 	memory_type_mapping get_memory_mapping(const physical_device& dev);
@@ -1087,9 +1087,9 @@ private:
 
 	struct fence
 	{
-		volatile bool flushed = false;
-		VkFence handle        = VK_NULL_HANDLE;
-		VkDevice owner        = VK_NULL_HANDLE;
+		atomic_t<bool> flushed = false;
+		VkFence handle         = VK_NULL_HANDLE;
+		VkDevice owner         = VK_NULL_HANDLE;
 
 		fence(VkDevice dev)
 		{
@@ -1111,7 +1111,12 @@ private:
 		void reset()
 		{
 			vkResetFences(owner, 1, &handle);
-			flushed = false;
+			flushed.release(false);
+		}
+
+		void signal_flushed()
+		{
+			flushed.release(true);
 		}
 
 		void wait_flush()
@@ -1254,7 +1259,7 @@ private:
 			is_open = false;
 		}
 
-		void submit(VkQueue queue, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, fence* pfence, VkPipelineStageFlags pipeline_stage_flags)
+		void submit(VkQueue queue, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, fence* pfence, VkPipelineStageFlags pipeline_stage_flags, VkBool32 flush = VK_FALSE)
 		{
 			if (is_open)
 			{
@@ -1289,7 +1294,7 @@ private:
 				infos.pSignalSemaphores = &signal_semaphore;
 			}
 
-			queue_submit(queue, &infos, pfence);
+			queue_submit(queue, &infos, pfence, flush);
 			clear_flags();
 		}
 	};
