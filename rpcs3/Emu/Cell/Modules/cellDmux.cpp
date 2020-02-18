@@ -1,5 +1,4 @@
-#include "stdafx.h"
-#include "Emu/System.h"
+﻿#include "stdafx.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
@@ -524,7 +523,7 @@ public:
 				}
 
 				stream = task.stream;
-				//LOG_NOTICE(HLE, "*** stream updated(addr=0x%x, size=0x%x, discont=%d, userdata=0x%llx)",
+				//cellDmux.notice("*** stream updated(addr=0x%x, size=0x%x, discont=%d, userdata=0x%llx)",
 					//stream.addr, stream.size, stream.discontinuity, stream.userdata);
 				break;
 			}

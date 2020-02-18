@@ -1,7 +1,4 @@
 ﻿#include "stdafx.h"
-#include "Emu/Memory/vm.h"
-#include "Emu/System.h"
-#include "Emu/IdManager.h"
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/RawSPUThread.h"
@@ -44,6 +41,9 @@
 
 #include "sync.h"
 #include "Log.h"
+
+LOG_CHANNEL(sig_log);
+LOG_CHANNEL(vm_log, "VM");
 
 thread_local u64 g_tls_fault_all = 0;
 thread_local u64 g_tls_fault_rsx = 0;
@@ -185,7 +185,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, siz
 		{
 			if (lock)
 			{
-				LOG_ERROR(MEMORY, "decode_x64_reg_op(%016llxh): LOCK prefix found twice", code - out_length);
+				sig_log.error("decode_x64_reg_op(%016llxh): LOCK prefix found twice", code - out_length);
 			}
 
 			lock = true;
@@ -195,7 +195,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, siz
 		{
 			if (repne)
 			{
-				LOG_ERROR(MEMORY, "decode_x64_reg_op(%016llxh): REPNE/REPNZ prefix found twice", code - out_length);
+				sig_log.error("decode_x64_reg_op(%016llxh): REPNE/REPNZ prefix found twice", code - out_length);
 			}
 
 			repne = true;
@@ -205,7 +205,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, siz
 		{
 			if (repe)
 			{
-				LOG_ERROR(MEMORY, "decode_x64_reg_op(%016llxh): REP/REPE/REPZ prefix found twice", code - out_length);
+				sig_log.error("decode_x64_reg_op(%016llxh): REP/REPE/REPZ prefix found twice", code - out_length);
 			}
 
 			repe = true;
@@ -221,7 +221,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, siz
 		{
 			if (pg2)
 			{
-				LOG_ERROR(MEMORY, "decode_x64_reg_op(%016llxh): 0x%02x (group 2 prefix) found after 0x%02x", code - out_length, prefix, pg2);
+				sig_log.error("decode_x64_reg_op(%016llxh): 0x%02x (group 2 prefix) found after 0x%02x", code - out_length, prefix, pg2);
 			}
 			else
 			{
@@ -234,7 +234,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, siz
 		{
 			if (oso)
 			{
-				LOG_ERROR(MEMORY, "decode_x64_reg_op(%016llxh): operand-size override prefix found twice", code - out_length);
+				sig_log.error("decode_x64_reg_op(%016llxh): operand-size override prefix found twice", code - out_length);
 			}
 
 			oso = true;
@@ -243,7 +243,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, siz
 
 		case 0x67: // group 4
 		{
-			LOG_ERROR(MEMORY, "decode_x64_reg_op(%016llxh): address-size override prefix found", code - out_length, prefix);
+			sig_log.error("decode_x64_reg_op(%016llxh): address-size override prefix found", code - out_length, prefix);
 			out_op = X64OP_NONE;
 			out_reg = X64_NOT_SET;
 			out_size = 0;
@@ -257,7 +257,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, siz
 			{
 				if (rex)
 				{
-					LOG_ERROR(MEMORY, "decode_x64_reg_op(%016llxh): 0x%02x (REX prefix) found after 0x%02x", code - out_length, prefix, rex);
+					sig_log.error("decode_x64_reg_op(%016llxh): 0x%02x (REX prefix) found after 0x%02x", code - out_length, prefix, rex);
 				}
 				else
 				{
@@ -757,7 +757,7 @@ uint64_t* darwin_x64reg(x64_context *context, int reg)
 	case 15: return &state->__r15;
 	case 16: return &state->__rip;
 	default:
-		LOG_ERROR(GENERAL, "Invalid register index: %d", reg);
+		sig_log.error("Invalid register index: %d", reg);
 		return nullptr;
 	}
 }
@@ -795,7 +795,7 @@ register_t* freebsd_x64reg(x64_context *context, int reg)
 	case 15: return &state->mc_r15;
 	case 16: return &state->mc_rip;
 	default:
-		LOG_ERROR(GENERAL, "Invalid register index: %d", reg);
+		sig_log.error("Invalid register index: %d", reg);
 		return nullptr;
 	}
 }
@@ -829,7 +829,7 @@ long* openbsd_x64reg(x64_context *context, int reg)
 	case 15: return &state->sc_r15;
 	case 16: return &state->sc_rip;
 	default:
-		LOG_ERROR(GENERAL, "Invalid register index: %d", reg);
+		sig_log.error("Invalid register index: %d", reg);
 		return nullptr;
 	}
 }
@@ -964,7 +964,7 @@ bool get_x64_reg_value(x64_context* context, x64_reg_t reg, size_t d_size, size_
 		return true;
 	}
 
-	LOG_ERROR(MEMORY, "get_x64_reg_value(): invalid arguments (reg=%d, d_size=%lld, i_size=%lld)", +reg, d_size, i_size);
+	sig_log.error("get_x64_reg_value(): invalid arguments (reg=%d, d_size=%lld, i_size=%lld)", +reg, d_size, i_size);
 	return false;
 }
 
@@ -983,7 +983,7 @@ bool put_x64_reg_value(x64_context* context, x64_reg_t reg, size_t d_size, u64 v
 		}
 	}
 
-	LOG_ERROR(MEMORY, "put_x64_reg_value(): invalid destination (reg=%d, d_size=%lld, value=0x%llx)", +reg, d_size, value);
+	sig_log.error("put_x64_reg_value(): invalid destination (reg=%d, d_size=%lld, value=0x%llx)", +reg, d_size, value);
 	return false;
 }
 
@@ -995,7 +995,7 @@ bool set_x64_cmp_flags(x64_context* context, size_t d_size, u64 x, u64 y, bool c
 	case 2: break;
 	case 4: break;
 	case 8: break;
-	default: LOG_ERROR(MEMORY, "set_x64_cmp_flags(): invalid d_size (%lld)", d_size); return false;
+	default: sig_log.error("set_x64_cmp_flags(): invalid d_size (%lld)", d_size); return false;
 	}
 
 	const u64 sign = 1ull << (d_size * 8 - 1); // sign mask
@@ -1093,7 +1093,7 @@ namespace rsx
 	extern std::function<bool(u32 addr, bool is_writing)> g_access_violation_handler;
 }
 
-bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
+bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) noexcept
 {
 	g_tls_fault_all++;
 
@@ -1114,7 +1114,7 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 		}
 		catch (const std::exception& e)
 		{
-			LOG_FATAL(RSX, "g_access_violation_handler(0x%x, %d): %s", addr, is_writing, e.what());
+			rsx_log.fatal("g_access_violation_handler(0x%x, %d): %s", addr, is_writing, e.what());
 
 			if (cpu)
 			{
@@ -1159,13 +1159,13 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 	{
 		if (op == X64OP_NONE)
 		{
-			LOG_ERROR(MEMORY, "decode_x64_reg_op(%p): unsupported opcode: %s", code, *reinterpret_cast<const be_t<v128, 1>*>(code));
+			sig_log.error("decode_x64_reg_op(%p): unsupported opcode: %s", code, *reinterpret_cast<const be_t<v128, 1>*>(code));
 		}
 	};
 
 	if ((d_size | (d_size + addr)) >= 0x100000000ull)
 	{
-		LOG_ERROR(MEMORY, "Invalid d_size (0x%llx)", d_size);
+		sig_log.error("Invalid d_size (0x%llx)", d_size);
 		report_opcode();
 		return false;
 	}
@@ -1175,7 +1175,7 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 
 	if ((a_size | (a_size + addr)) >= 0x100000000ull)
 	{
-		LOG_ERROR(MEMORY, "Invalid a_size (0x%llx)", a_size);
+		sig_log.error("Invalid a_size (0x%llx)", a_size);
 		report_opcode();
 		return false;
 	}
@@ -1192,7 +1192,7 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 
 		if (a_size != 4 || !d_size || !i_size)
 		{
-			LOG_ERROR(MEMORY, "Invalid or unsupported instruction (op=%d, reg=%d, d_size=%lld, a_size=0x%llx, i_size=%lld)", +op, +reg, d_size, a_size, i_size);
+			sig_log.error("Invalid or unsupported instruction (op=%d, reg=%d, d_size=%lld, a_size=0x%llx, i_size=%lld)", +op, +reg, d_size, a_size, i_size);
 			report_opcode();
 			return false;
 		}
@@ -1265,7 +1265,7 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 		case X64OP_STOS:
 		default:
 		{
-			LOG_ERROR(MEMORY, "Invalid or unsupported operation (op=%d, reg=%d, d_size=%lld, i_size=%lld)", +op, +reg, d_size, i_size);
+			sig_log.error("Invalid or unsupported operation (op=%d, reg=%d, d_size=%lld, i_size=%lld)", +op, +reg, d_size, i_size);
 			report_opcode();
 			return false;
 		}
@@ -1286,6 +1286,32 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 
 		return true;
 	}
+
+	thread_local bool access_violation_recovered = false;
+
+	// Hack: allocate memory in case the emulator is stopping
+	const auto hack_alloc = [&]()
+	{
+		// If failed the value remains true and std::terminate should be called
+		access_violation_recovered = true;
+
+		const auto area = vm::reserve_map(vm::any, addr & -0x10000, 0x10000);
+
+		if (!area)
+		{
+			return false;
+		}
+
+		if (area->flags & 0x100 || (is_writing && vm::check_addr(addr, std::max(1u, ::narrow<u32>(d_size)))))
+		{
+			// For 4kb pages or read only memory
+			utils::memory_protect(vm::base(addr & -0x1000), 0x1000, utils::protection::rw);
+			return true;
+		}
+
+		area->falloc(addr & -0x10000, 0x10000);
+		return vm::check_addr(addr, std::max(1u, ::narrow<u32>(d_size)), is_writing ? vm::page_writable : vm::page_readable);
+	};
 
 	if (cpu)
 	{
@@ -1357,7 +1383,7 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 				pf_events->events.emplace(static_cast<u32>(data2), addr);
 			}
 
-			LOG_ERROR(MEMORY, "Page_fault %s location 0x%x because of %s memory", is_writing ? "writing" : "reading",
+			sig_log.error("Page_fault %s location 0x%x because of %s memory", is_writing ? "writing" : "reading",
 				addr, data3 == SYS_MEMORY_PAGE_FAULT_CAUSE_READ_ONLY ? "writing read-only" : "using unmapped");
 
 			error_code sending_error = sys_event_port_send(pf_port_id, data1, data2, data3);
@@ -1374,22 +1400,23 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 				sending_error = sys_event_port_send(pf_port_id, data1, data2, data3);
 			}
 
-			if (sending_error)
-			{
-				fmt::throw_exception("Unknown error %x while trying to pass page fault.", sending_error.value);
-			}
-
 			if (cpu->id_type() == 1)
 			{
 				// Deschedule
 				lv2_obj::sleep(*cpu);
 			}
 
+			if (sending_error)
+			{
+				vm_log.fatal("Unknown error %x while trying to pass page fault.", +sending_error);
+				cpu->state += cpu_flag::dbg_pause;
+			}
+	
 			// Wait until the thread is recovered
 			for (std::shared_lock pf_lock(pf_events->pf_mutex);
-				pf_events->events.find(static_cast<u32>(data2)) != pf_events->events.end();)
+				pf_events->events.count(static_cast<u32>(data2)) && !sending_error;)
 			{
-				if (Emu.IsStopped())
+				if (cpu->is_stopped())
 				{
 					break;
 				}
@@ -1398,16 +1425,10 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 				pf_events->cond.wait(pf_lock, 10000);
 			}
 
-			// Reschedule
-			if (cpu->test_stopped())
+			// Reschedule, test cpu state and try recovery if stopped
+			if (cpu->test_stopped() && !hack_alloc())
 			{
-				//
-			}
-
-			if (Emu.IsStopped())
-			{
-				// Hack: allocate memory in case the emulator is stopping
-				vm::falloc(addr & -0x10000, 0x10000);
+				std::terminate();
 			}
 
 			return true;
@@ -1415,36 +1436,29 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 
 		if (cpu->id_type() != 1)
 		{
-			LOG_NOTICE(GENERAL, "\n%s", cpu->dump());
-			LOG_FATAL(MEMORY, "Access violation %s location 0x%x", is_writing ? "writing" : "reading", addr);
+			if (!access_violation_recovered)
+			{
+				vm_log.notice("\n%s", cpu->dump());
+				vm_log.fatal("Access violation %s location 0x%x (%s)", is_writing ? "writing" : "reading", addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
+			}
 
 			// TODO:
 			// RawSPU: Send appropriate interrupt
 			// SPUThread: Send sys_spu exception event
 			cpu->state += cpu_flag::dbg_pause;
-			if (cpu->check_state())
+
+			if (cpu->check_state() && !hack_alloc())
 			{
-				// Hack: allocate memory in case the emulator is stopping
-				auto area = vm::reserve_map(vm::any, addr & -0x10000, 0x10000);
-
-				if (area->flags & 0x100)
-				{
-					// For 4kb pages
-					utils::memory_protect(vm::base(addr & -0x1000), 0x1000, utils::protection::rw);
-				}
-				else
-				{
-					area->falloc(addr & -0x10000, 0x10000);
-				}
-
-				return true;
+				std::terminate();
 			}
+
+			return true;
 		}
 		else
 		{
 			if (auto last_func = static_cast<ppu_thread*>(cpu)->current_function)
 			{
-				LOG_FATAL(PPU, "Function aborted: %s", last_func);
+				ppu_log.fatal("Function aborted: %s", last_func);
 			}
 
 			lv2_obj::sleep(*cpu);
@@ -1453,19 +1467,24 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 
 	Emu.Pause();
 
-	if (cpu)
+	if (cpu && !access_violation_recovered)
 	{
-		LOG_NOTICE(GENERAL, "\n%s", cpu->dump());
+		vm_log.notice("\n%s", cpu->dump());
 	}
 
-	LOG_FATAL(MEMORY, "Access violation %s location 0x%x", is_writing ? "writing" : "reading", addr);
+	// Note: a thread may access violate more than once after hack_alloc recovery
+	// Do not log any further access violations in this case.
+	if (!access_violation_recovered)
+	{
+		vm_log.fatal("Access violation %s location 0x%x (%s)", is_writing ? "writing" : "reading", addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
+	}
 
 	while (Emu.IsPaused())
 	{
 		thread_ctrl::wait();
 	}
 
-	if (Emu.IsStopped())
+	if (Emu.IsStopped() && !hack_alloc())
 	{
 		std::terminate();
 	}
@@ -1475,7 +1494,7 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 
 #ifdef _WIN32
 
-static LONG exception_handler(PEXCEPTION_POINTERS pExp)
+static LONG exception_handler(PEXCEPTION_POINTERS pExp) noexcept
 {
 	const u64 addr64 = pExp->ExceptionRecord->ExceptionInformation[1] - reinterpret_cast<u64>(vm::g_base_addr);
 	const u64 exec64 = (pExp->ExceptionRecord->ExceptionInformation[1] - reinterpret_cast<u64>(vm::g_exec_addr)) / 2;
@@ -1499,7 +1518,7 @@ static LONG exception_handler(PEXCEPTION_POINTERS pExp)
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
-static LONG exception_filter(PEXCEPTION_POINTERS pExp)
+static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 {
 	std::string msg = fmt::format("Unhandled Win32 exception 0x%08X.\n", pExp->ExceptionRecord->ExceptionCode);
 
@@ -1596,7 +1615,7 @@ const bool s_exception_handler_set = []() -> bool
 
 #else
 
-static void signal_handler(int sig, siginfo_t* info, void* uct)
+static void signal_handler(int sig, siginfo_t* info, void* uct) noexcept
 {
 	x64_context* context = static_cast<ucontext_t*>(uct);
 
@@ -1724,7 +1743,7 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 	m_timer = timerfd_create(CLOCK_MONOTONIC, 0);
 	if (m_timer == -1)
 	{
-		LOG_ERROR(GENERAL, "Linux timer allocation failed, use wait_unlock() only");
+		sig_log.error("Linux timer allocation failed, use wait_unlock() only");
 	}
 #endif
 }
@@ -1770,7 +1789,7 @@ bool thread_base::finalize(int) noexcept
 		return thread_ctrl::g_tls_this_thread->m_name.get();
 	};
 
-	LOG_NOTICE(GENERAL, "Thread time: %fs (%fGc); Faults: %u [rsx:%u, spu:%u];",
+	sig_log.notice("Thread time: %fs (%fGc); Faults: %u [rsx:%u, spu:%u];",
 		time / 1000000000.,
 		cycles / 1000000000.,
 		g_tls_fault_all,
@@ -1808,7 +1827,7 @@ void thread_ctrl::_wait_for(u64 usec, bool alert /* true */)
 		timeout.it_interval.tv_nsec = 0;
 		timerfd_settime(_this->m_timer, 0, &timeout, NULL);
 		if (read(_this->m_timer, &missed, sizeof(missed)) != sizeof(missed))
-			LOG_ERROR(GENERAL, "timerfd: read() failed");
+			sig_log.error("timerfd: read() failed");
 		return;
 	}
 #endif
@@ -1949,13 +1968,13 @@ void thread_ctrl::detect_cpu_layout()
 		// If buffer size is set to 0 bytes, it will be overwritten with the required size
 		if (GetLogicalProcessorInformationEx(relationship, nullptr, &buffer_size))
 		{
-			LOG_ERROR(GENERAL, "GetLogicalProcessorInformationEx returned 0 bytes");
+			sig_log.error("GetLogicalProcessorInformationEx returned 0 bytes");
 			return;
 		}
 		DWORD error_code = GetLastError();
 		if (error_code != ERROR_INSUFFICIENT_BUFFER)
 		{
-			LOG_ERROR(GENERAL, "Unexpected windows error code when detecting CPU layout: %u", error_code);
+			sig_log.error("Unexpected windows error code when detecting CPU layout: %u", error_code);
 			return;
 		}
 
@@ -1964,7 +1983,7 @@ void thread_ctrl::detect_cpu_layout()
 		if (!GetLogicalProcessorInformationEx(relationship,
 			reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buffer.data()), &buffer_size))
 		{
-			LOG_ERROR(GENERAL, "GetLogicalProcessorInformationEx failed (size=%u, error=%u)", buffer_size, GetLastError());
+			sig_log.error("GetLogicalProcessorInformationEx failed (size=%u, error=%u)", buffer_size, GetLastError());
 		}
 		else
 		{
@@ -1984,7 +2003,7 @@ void thread_ctrl::detect_cpu_layout()
 			}
 		}
 #else
-		LOG_TODO(GENERAL, "Thread scheduler is not implemented for Intel and this OS");
+		sig_log.todo("Thread scheduler is not implemented for Intel and this OS");
 #endif
 	}
 }
@@ -2160,7 +2179,7 @@ void thread_ctrl::set_native_priority(int priority)
 
 	if (!SetThreadPriority(_this_thread, native_priority))
 	{
-		LOG_ERROR(GENERAL, "SetThreadPriority() failed: 0x%x", GetLastError());
+		sig_log.error("SetThreadPriority() failed: 0x%x", GetLastError());
 	}
 #else
 	int policy;
@@ -2175,7 +2194,7 @@ void thread_ctrl::set_native_priority(int priority)
 
 	if (int err = pthread_setschedparam(pthread_self(), policy, &param))
 	{
-		LOG_ERROR(GENERAL, "pthraed_setschedparam() failed: %d", err);
+		sig_log.error("pthraed_setschedparam() failed: %d", err);
 	}
 #endif
 }
@@ -2200,7 +2219,10 @@ void thread_ctrl::set_thread_affinity_mask(u64 mask)
 
 		if (shifted & 1)
 		{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
 			CPU_SET(core, &cs);
+#pragma GCC diagnostic pop
 		}
 
 		if (shifted <= 1)

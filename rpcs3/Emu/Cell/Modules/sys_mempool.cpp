@@ -2,8 +2,6 @@
 
 #include "Utilities/StrUtil.h"
 
-#include "Emu/System.h"
-#include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "Emu/Cell/lv2/sys_mutex.h"
@@ -11,8 +9,7 @@
 
 #include "sysPrxForUser.h"
 
-
-extern logs::channel sysPrxForUser;
+LOG_CHANNEL(sysPrxForUser);
 
 using sys_mempool_t = u32;
 

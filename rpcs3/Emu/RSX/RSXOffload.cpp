@@ -1,7 +1,6 @@
 ﻿#include "stdafx.h"
 
 #include "Common/BufferUtils.h"
-#include "Emu/System.h"
 #include "RSXOffload.h"
 #include "RSXThread.h"
 #include "rsx_utils.h"
@@ -139,7 +138,7 @@ namespace rsx
 
 	bool dma_manager::sync()
 	{
-		if (LIKELY(m_enqueued_count.load() == m_processed_count))
+		if (m_enqueued_count.load() == m_processed_count) [[likely]]
 		{
 			// Nothing to do
 			return true;

@@ -1,5 +1,5 @@
-#include "stdafx.h"
-#include "Emu/System.h"
+﻿#include "stdafx.h"
+#include "Emu/VFS.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "Emu/Cell/RawSPUThread.h"
@@ -8,7 +8,7 @@
 #include "Loader/ELF.h"
 #include "sysPrxForUser.h"
 
-extern logs::channel sysPrxForUser;
+LOG_CHANNEL(sysPrxForUser);
 
 spu_printf_cb_t g_spu_printf_agcb;
 spu_printf_cb_t g_spu_printf_dgcb;

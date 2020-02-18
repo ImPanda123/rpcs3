@@ -1,23 +1,13 @@
 ﻿#include "main_application.h"
 
 #include "Input/pad_thread.h"
-#include "Emu/Io/Null/NullPadHandler.h"
+#include "Emu/System.h"
 #include "Emu/Io/Null/NullKeyboardHandler.h"
 #include "Emu/Io/Null/NullMouseHandler.h"
 #include "Emu/Io/KeyboardHandler.h"
-#include "Emu/Io/PadHandler.h"
 #include "Emu/Io/MouseHandler.h"
 #include "Input/basic_keyboard_handler.h"
 #include "Input/basic_mouse_handler.h"
-#include "Input/keyboard_pad_handler.h"
-#include "Input/ds4_pad_handler.h"
-#ifdef _WIN32
-#include "Input/xinput_pad_handler.h"
-#include "Input/mm_joystick_handler.h"
-#endif
-#ifdef HAVE_LIBEVDEV
-#include "Input/evdev_joystick_handler.h"
-#endif
 
 #include "Emu/Audio/AudioBackend.h"
 #include "Emu/Audio/Null/NullAudioBackend.h"
@@ -74,7 +64,7 @@ EmuCallbacks main_application::CreateCallbacks()
 		pad::get_current_handler()->SetEnabled(enable);
 	};
 
-	callbacks.init_kb_handler = [=]()
+	callbacks.init_kb_handler = [=, this]()
 	{
 		switch (keyboard_handler type = g_cfg.io.keyboard)
 		{
@@ -94,7 +84,7 @@ EmuCallbacks main_application::CreateCallbacks()
 		}
 	};
 
-	callbacks.init_mouse_handler = [=]()
+	callbacks.init_mouse_handler = [=, this]()
 	{
 		switch (mouse_handler type = g_cfg.io.mouse)
 		{
