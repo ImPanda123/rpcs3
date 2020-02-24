@@ -75,6 +75,11 @@ namespace rsx
 
 		compiled_resource message_dialog::get_compiled()
 		{
+			if (!visible)
+			{
+				return {};
+			}
+
 			compiled_resource result;
 
 			if (background_image && background_image->data)
@@ -158,6 +163,8 @@ namespace rsx
 
 		error_code message_dialog::show(bool is_blocking, const std::string& text, const MsgDialogType& type, std::function<void(s32 status)> on_close)
 		{
+			visible = false;
+
 			num_progress_bars = type.progress_bar_count;
 			if (num_progress_bars)
 			{
@@ -176,7 +183,7 @@ namespace rsx
 				btn_cancel.translate(0, offset);
 			}
 
-			text_display.set_text(utf8_to_ascii8(text));
+			text_display.set_text(text);
 
 			u16 text_w, text_h;
 			text_display.measure_text(text_w, text_h);
@@ -207,6 +214,7 @@ namespace rsx
 			}
 
 			this->on_close = std::move(on_close);
+			visible = true;
 
 			if (is_blocking)
 			{
@@ -297,7 +305,7 @@ namespace rsx
 			else
 				progress_2.inc(value);
 
-			if (index == taskbar_index || taskbar_index == -1)
+			if (index == static_cast<u32>(taskbar_index) || taskbar_index == -1)
 				Emu.GetCallbacks().handle_taskbar_progress(1, static_cast<s32>(value));
 
 			return CELL_OK;
@@ -328,7 +336,7 @@ namespace rsx
 			else
 				progress_2.set_limit(static_cast<f32>(limit));
 
-			if (index == taskbar_index)
+			if (index == static_cast<u32>(taskbar_index))
 			{
 				taskbar_limit = limit;
 				Emu.GetCallbacks().handle_taskbar_progress(2, taskbar_limit);

@@ -1077,7 +1077,7 @@ void spu_recompiler_base::dispatch(spu_thread& spu, void*, u8* rip)
 	spu.jit->init();
 
 	// Compile
-	if (spu._ref<u32>(spu.pc) == 0)
+	if (spu._ref<u32>(spu.pc) == 0u)
 	{
 		spu_runtime::g_escape(&spu);
 		return;
@@ -1307,11 +1307,11 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 		// Fill register access info
 		if (auto iflags = s_spu_iflag.decode(data))
 		{
-			if (iflags & spu_iflag::use_ra)
+			if (+iflags & +spu_iflag::use_ra)
 				m_use_ra[pos / 4] = op.ra;
-			if (iflags & spu_iflag::use_rb)
+			if (+iflags & +spu_iflag::use_rb)
 				m_use_rb[pos / 4] = op.rb;
-			if (iflags & spu_iflag::use_rc)
+			if (+iflags & +spu_iflag::use_rc)
 				m_use_rc[pos / 4] = op.rc;
 		}
 
@@ -1540,16 +1540,16 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 					}
 				}
 				else if (start + 12 * 4 < limit &&
-					ls[start / 4 + 0] == 0x1ce00408 &&
-					ls[start / 4 + 1] == 0x24000389 &&
-					ls[start / 4 + 2] == 0x24004809 &&
-					ls[start / 4 + 3] == 0x24008809 &&
-					ls[start / 4 + 4] == 0x2400c809 &&
-					ls[start / 4 + 5] == 0x24010809 &&
-					ls[start / 4 + 6] == 0x24014809 &&
-					ls[start / 4 + 7] == 0x24018809 &&
-					ls[start / 4 + 8] == 0x1c200807 &&
-					ls[start / 4 + 9] == 0x2401c809)
+					ls[start / 4 + 0] == 0x1ce00408u &&
+					ls[start / 4 + 1] == 0x24000389u &&
+					ls[start / 4 + 2] == 0x24004809u &&
+					ls[start / 4 + 3] == 0x24008809u &&
+					ls[start / 4 + 4] == 0x2400c809u &&
+					ls[start / 4 + 5] == 0x24010809u &&
+					ls[start / 4 + 6] == 0x24014809u &&
+					ls[start / 4 + 7] == 0x24018809u &&
+					ls[start / 4 + 8] == 0x1c200807u &&
+					ls[start / 4 + 9] == 0x2401c809u)
 				{
 					spu_log.warning("[0x%x] Pattern 1 detected (hbr=0x%x:0x%x)", pos, hbr_loc, hbr_tg);
 
@@ -3216,11 +3216,6 @@ void spu_recompiler_base::dump(const spu_program& result, std::string& out)
 #pragma warning(pop)
 #else
 #pragma GCC diagnostic pop
-#endif
-
-#ifndef _MSC_VER
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winit-list-lifetime"
 #endif
 
 class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
@@ -7773,9 +7768,6 @@ public:
 			m_ir->CreateStore(&*(m_function->arg_begin() + 2), spu_ptr<u32>(&spu_thread::pc))->setVolatile(true);
 		else
 			update_pc();
-		const auto pstatus = spu_ptr<u32>(&spu_thread::status);
-		const auto chalt = m_ir->getInt32(SPU_STATUS_STOPPED_BY_HALT);
-		m_ir->CreateAtomicRMW(llvm::AtomicRMWInst::Or, pstatus, chalt, llvm::AtomicOrdering::Release)->setVolatile(true);
 		const auto ptr = _ptr<u32>(m_memptr, 0xffdead00);
 		m_ir->CreateStore(m_ir->getInt32("HALT"_u32), ptr)->setVolatile(true);
 		m_ir->CreateBr(next);

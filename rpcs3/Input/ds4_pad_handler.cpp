@@ -1,5 +1,6 @@
 ﻿#include "stdafx.h"
 #include "ds4_pad_handler.h"
+#include "Emu/Io/pad_config.h"
 
 LOG_CHANNEL(ds4_log, "DS4");
 
@@ -192,7 +193,7 @@ void ds4_pad_handler::SetPadData(const std::string& padId, u32 largeMotor, u32 s
 	device->smallVibrate = smallMotor;
 
 	int index = 0;
-	for (int i = 0; i < MAX_GAMEPADS; i++)
+	for (uint i = 0; i < MAX_GAMEPADS; i++)
 	{
 		if (g_cfg_input.player[i]->handler == pad_handler::ds4)
 		{

@@ -1,14 +1,12 @@
 ﻿#pragma once
 
-#include "Utilities/File.h"
-#include "Utilities/Log.h"
-
 #include "yaml-cpp/yaml.h"
+
+#include "stdafx.h"
 
 #include <QCheckBox>
 #include <QStringList>
 #include <QMap>
-#include <QObject>
 #include <QComboBox>
 #include <QSpinBox>
 
@@ -41,6 +39,7 @@ public:
 		EnableTSX,
 		AccurateGETLLAR,
 		AccuratePUTLLUC,
+		AccurateRSXAccess,
 		AccurateXFloat,
 		SetDAZandFTZ,
 		SPUBlockSize,
@@ -168,9 +167,16 @@ public:
 		bool has_msaa = false;
 
 		Render_Info() = default;
-		explicit Render_Info(QString name) : name(std::move(name)), has_adapters(false) {}
+		explicit Render_Info(QString name)
+			: name(std::move(name))
+			, has_adapters(false) {}
+
 		Render_Info(QString name, QStringList adapters, bool supported, SettingsType type, bool has_msaa)
-			: name(std::move(name)), adapters(std::move(adapters)), supported(supported), type(type), has_msaa(has_msaa) {}
+			: name(std::move(name))
+			, adapters(std::move(adapters))
+			, type(type)
+			, supported(supported)
+			, has_msaa(has_msaa) {}
 	};
 
 	struct Render_Creator
@@ -274,6 +280,7 @@ private:
 		{ EnableTSX,                { "Core", "Enable TSX"}},
 		{ AccurateGETLLAR,          { "Core", "Accurate GETLLAR"}},
 		{ AccuratePUTLLUC,          { "Core", "Accurate PUTLLUC"}},
+		{ AccurateRSXAccess,        { "Core", "Accurate RSX reservation access"}},
 		{ AccurateXFloat,           { "Core", "Accurate xfloat"}},
 		{ SetDAZandFTZ,             { "Core", "Set DAZ and FTZ"}},
 		{ SPUBlockSize,             { "Core", "SPU Block Size"}},

@@ -116,6 +116,7 @@ void Emulator::Init()
 	const std::string dev_hdd0 = GetHddDir();
 	const std::string dev_hdd1 = fmt::replace_all(g_cfg.vfs.dev_hdd1, "$(EmulatorDir)", emu_dir);
 	const std::string dev_usb = fmt::replace_all(g_cfg.vfs.dev_usb000, "$(EmulatorDir)", emu_dir);
+	const std::string dev_flsh = g_cfg.vfs.get_dev_flash();
 
 	auto make_path_verbose = [](const std::string& path)
 	{
@@ -131,6 +132,7 @@ void Emulator::Init()
 	{
 		make_path_verbose(dev_hdd0);
 		make_path_verbose(dev_hdd1);
+		make_path_verbose(dev_flsh);
 		make_path_verbose(dev_usb);
 		make_path_verbose(dev_hdd0 + "game/");
 		make_path_verbose(dev_hdd0 + "game/TEST12345/");
@@ -159,7 +161,7 @@ void Emulator::Init()
 	// Fixup savedata
 	for (const auto& entry : fs::dir(save_path))
 	{
-		if (entry.is_directory && entry.name.compare(0, 8, ".backup_", 8) == 0)
+		if (entry.is_directory && entry.name.starts_with(".backup_"))
 		{
 			const std::string desired = entry.name.substr(8);
 			const std::string pending = save_path + ".working_" + desired;
@@ -694,7 +696,7 @@ void Emulator::SetForceBoot(bool force_boot)
 	m_force_boot = force_boot;
 }
 
-void Emulator::Load(const std::string& title_id, bool add_only, bool force_global_config)
+void Emulator::Load(const std::string& title_id, bool add_only, bool force_global_config, bool is_disc_patch)
 {
 	m_force_global_config = force_global_config;
 
@@ -808,21 +810,25 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 			}
 		}
 
-#if defined(_WIN32) || defined(HAVE_VULKAN)
-		if (g_cfg.video.renderer == video_renderer::vulkan)
-		{
-			sys_log.notice("Vulkan SDK Revision: %d", VK_HEADER_VERSION);
-		}
-#endif
-
-		sys_log.notice("Used configuration:\n%s\n", g_cfg.to_string());
-
 		// Set RTM usage
 		g_use_rtm = utils::has_rtm() && ((utils::has_mpx() && g_cfg.core.enable_TSX == tsx_usage::enabled) || g_cfg.core.enable_TSX == tsx_usage::forced);
 
-		if (g_use_rtm && !utils::has_mpx())
+		// Log some extra info in case of boot
+		if (!add_only)
 		{
-			sys_log.warning("TSX forced by User");
+#if defined(_WIN32) || defined(HAVE_VULKAN)
+			if (g_cfg.video.renderer == video_renderer::vulkan)
+			{
+				sys_log.notice("Vulkan SDK Revision: %d", VK_HEADER_VERSION);
+			}
+#endif
+
+			sys_log.notice("Used configuration:\n%s\n", g_cfg.to_string());
+
+			if (g_use_rtm && !utils::has_mpx())
+			{
+				sys_log.warning("TSX forced by User");
+			}
 		}
 
 		// Load patches from different locations
@@ -847,7 +853,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 		}
 
 		// Special boot mode (directory scan)
-		if (fs::is_dir(m_path))
+		if (!add_only && fs::is_dir(m_path))
 		{
 			m_state = system_state::ready;
 			GetCallbacks().on_ready();
@@ -862,7 +868,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 			// Workaround for analyser glitches
 			vm::falloc(0x10000, 0xf0000, vm::main);
 
-			return thread_ctrl::spawn("SPRX Loader", [this]
+			auto sprx_loader_body = [this]
 			{
 				std::vector<std::string> dir_queue;
 				dir_queue.emplace_back(m_path + '/');
@@ -904,7 +910,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 						}
 
 						// Check .sprx filename
-						if (entry.name.size() >= 5 && fmt::to_upper(entry.name).compare(entry.name.size() - 5, 5, ".SPRX", 5) == 0)
+						if (fmt::to_upper(entry.name).ends_with(".SPRX"))
 						{
 							if (entry.name == "libfs_155.sprx")
 							{
@@ -977,7 +983,10 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 				{
 					Emu.Stop();
 				});
-			});
+			};
+
+			g_fxo->init<named_thread<decltype(sprx_loader_body)>>("SPRX Loader"sv, std::move(sprx_loader_body));
+			return;
 		}
 
 		// Detect boot location
@@ -985,7 +994,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 		const std::string hdd0_disc = vfs::get("/dev_hdd0/disc/");
 		const std::size_t game_dir_size = 8; // size of PS3_GAME and PS3_GMXX
 		const std::size_t bdvd_pos = m_cat == "DG" && bdvd_dir.empty() && disc.empty() ? elf_dir.rfind("/USRDIR") - game_dir_size : 0;
-		const bool from_hdd0_game = m_path.find(hdd0_game) != -1;
+		const bool from_hdd0_game = m_path.find(hdd0_game) != std::string::npos;
 
 		if (bdvd_pos && from_hdd0_game)
 		{
@@ -1012,9 +1021,10 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 			bdvd_dir = elf_dir.substr(0, bdvd_pos);
 			m_game_dir = elf_dir.substr(bdvd_pos, game_dir_size);
 		}
-		else
+		else if (!is_disc_patch)
 		{
-			m_game_dir = "PS3_GAME"; // reset
+			// Reset original disc game dir if this is neither disc nor disc patch
+			m_game_dir = "PS3_GAME";
 		}
 
 		// Booting patch data
@@ -1064,7 +1074,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 		}
 		else if (m_cat == "1P" && from_hdd0_game)
 		{
-			//PS1 Classics
+			// PS1 Classic located in dev_hdd0/game
 			sys_log.notice("PS1 Game: %s, %s", m_title_id, m_title);
 
 			std::string gamePath = m_path.substr(m_path.find("/dev_hdd0/game/"), 24);
@@ -1098,6 +1108,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 		}
 		else if (m_cat == "DG" && from_hdd0_game)
 		{
+			// Disc game located in dev_hdd0/game
 			vfs::mount("/dev_bdvd/PS3_GAME", hdd0_game + m_path.substr(hdd0_game.size(), 10));
 			sys_log.notice("Game: %s", vfs::get("/dev_bdvd/PS3_GAME"));
 		}
@@ -1108,6 +1119,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 		}
 		else
 		{
+			// Disc game
 			bdvd_dir = disc;
 			vfs::mount("/dev_bdvd", bdvd_dir);
 			sys_log.notice("Disk: %s", vfs::get("/dev_bdvd"));
@@ -1141,7 +1153,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 				for (auto&& entry : fs::dir{ins_dir})
 				{
 					const std::string pkg = ins_dir + entry.name;
-					if (!entry.is_directory && ends_with(entry.name, ".PKG") && !InstallPkg(pkg))
+					if (!entry.is_directory && entry.name.ends_with(".PKG") && !InstallPkg(pkg))
 					{
 						sys_log.error("Failed to install %s", pkg);
 						return;
@@ -1155,7 +1167,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 
 				for (auto&& entry : fs::dir{pkg_dir})
 				{
-					if (entry.is_directory && entry.name.compare(0, 3, "PKG", 3) == 0)
+					if (entry.is_directory && entry.name.starts_with("PKG"))
 					{
 						const std::string pkg_file = pkg_dir + entry.name + "/INSTALL.PKG";
 
@@ -1195,7 +1207,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 		{
 			// Booting game update
 			sys_log.success("Updates found at /dev_hdd0/game/%s/!", m_title_id);
-			return m_path = hdd0_boot, Load(m_title_id, false, force_global_config);
+			return m_path = hdd0_boot, Load(m_title_id, false, force_global_config, true);
 		}
 
 		// Set title to actual disc title if necessary

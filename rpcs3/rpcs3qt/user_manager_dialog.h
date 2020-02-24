@@ -1,23 +1,12 @@
 ﻿#pragma once
 
 #include "stdafx.h"
-#include "gui_settings.h"
-#include "emu_settings.h"
-
-#include "Utilities/File.h"
 #include "user_account.h"
 
 #include <QDialog>
 #include <QTableWidget>
-#include <QHBoxLayout>
-#include <QPushButton>
-#include <QHeaderView>
-#include <QMenu>
-#include <QMessageBox>
-#include <QDesktopWidget>
-#include <QApplication>
-#include <QUrl>
-#include <QDesktopServices>
+
+class gui_settings;
 
 class user_manager_dialog : public QDialog
 {
@@ -51,6 +40,6 @@ private:
 
 	std::shared_ptr<gui_settings> m_gui_settings;
 
-	int m_sort_column;
-	bool m_sort_ascending;
+	int m_sort_column = 1;
+	bool m_sort_ascending = true;
 };

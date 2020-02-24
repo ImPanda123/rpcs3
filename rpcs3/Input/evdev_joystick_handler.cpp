@@ -3,9 +3,8 @@
 
 #ifdef HAVE_LIBEVDEV
 
-#include "rpcs3qt/pad_settings_dialog.h"
+#include "Emu/Io/pad_config.h"
 #include "evdev_joystick_handler.h"
-#include "Utilities/Thread.h"
 #include "Utilities/Log.h"
 
 #include <functional>
@@ -292,7 +291,7 @@ void evdev_joystick_handler::get_next_button_press(const std::string& padId, con
 
 	auto data = GetButtonValues(device);
 
-	auto find_value = [=](const std::string& name)
+	auto find_value = [=, this](const std::string& name)
 	{
 		int key = FindKeyCodeByString(rev_axis_list, name, false);
 		bool dir = key >= 0;
@@ -738,7 +737,7 @@ void evdev_joystick_handler::get_mapping(const std::shared_ptr<PadDevice>& devic
 	// Translate any corresponding keycodes to our normal DS3 buttons and triggers
 	for (int i = 0; i < static_cast<int>(pad->m_buttons.size()); i++)
 	{
-		if (pad->m_buttons[i].m_keyCode != button_code)
+		if (pad->m_buttons[i].m_keyCode != button_code + 0u)
 			continue;
 
 		// Be careful to handle mapped axis specially
@@ -773,7 +772,7 @@ void evdev_joystick_handler::get_mapping(const std::shared_ptr<PadDevice>& devic
 		bool pressed_max = false;
 
 		// m_keyCodeMin is the mapped key for left or down
-		if (pad->m_sticks[idx].m_keyCodeMin == button_code)
+		if (pad->m_sticks[idx].m_keyCodeMin == button_code + 0u)
 		{
 			bool is_direction_min = false;
 
@@ -799,7 +798,7 @@ void evdev_joystick_handler::get_mapping(const std::shared_ptr<PadDevice>& devic
 		}
 
 		// m_keyCodeMax is the mapped key for right or up
-		if (pad->m_sticks[idx].m_keyCodeMax == button_code)
+		if (pad->m_sticks[idx].m_keyCodeMax == button_code + 0u)
 		{
 			bool is_direction_max = false;
 

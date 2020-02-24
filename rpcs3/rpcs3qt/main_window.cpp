@@ -1,12 +1,5 @@
-﻿
-#include <QApplication>
-#include <QMenuBar>
-#include <QMessageBox>
+﻿#include <QMessageBox>
 #include <QFileDialog>
-#include <QVBoxLayout>
-#include <QDockWidget>
-#include <QDesktopWidget>
-#include <QMimeData>
 
 #include "qt_utils.h"
 #include "vfs_dialog.h"
@@ -24,35 +17,31 @@
 #include "memory_viewer_panel.h"
 #include "rsx_debugger.h"
 #include "main_window.h"
-#include "emu_settings.h"
 #include "about_dialog.h"
 #include "pad_settings_dialog.h"
 #include "progress_dialog.h"
 #include "skylander_dialog.h"
 #include "cheat_manager.h"
 #include "pkg_install_dialog.h"
+#include "category.h"
+#include "gui_settings.h"
 
 #include <thread>
 
 #include <QScreen>
 
 #include "stdafx.h"
+#include "rpcs3_version.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
-#include "Emu/Memory/vm.h"
 
 #include "Crypto/unpkg.h"
 #include "Crypto/unself.h"
 
 #include "Loader/PUP.h"
 #include "Loader/TAR.h"
-#include "Loader/PSF.h"
 
 #include "Utilities/Thread.h"
-#include "Utilities/StrUtil.h"
-
-#include "rpcs3_version.h"
-#include "Utilities/sysinfo.h"
 
 #include "ui_main_window.h"
 
@@ -62,11 +51,10 @@ inline std::string sstr(const QString& _in) { return _in.toStdString(); }
 
 main_window::main_window(std::shared_ptr<gui_settings> guiSettings, std::shared_ptr<emu_settings> emuSettings, std::shared_ptr<persistent_settings> persistent_settings, QWidget *parent)
 	: QMainWindow(parent)
+	, ui(new Ui::main_window)
 	, guiSettings(guiSettings)
 	, emuSettings(emuSettings)
 	, m_persistent_settings(persistent_settings)
-	, m_sys_menu_opened(false)
-	, ui(new Ui::main_window)
 {
 	Q_INIT_RESOURCE(resources);
 
@@ -1333,8 +1321,8 @@ void main_window::CreateConnects()
 		connect(&dlg, &settings_dialog::GuiSettingsSyncRequest, this, &main_window::ConfigureGuiFromSettings);
 		connect(&dlg, &settings_dialog::GuiStylesheetRequest, this, &main_window::RequestGlobalStylesheetChange);
 		connect(&dlg, &settings_dialog::GuiRepaintRequest, this, &main_window::RepaintGui);
-		connect(&dlg, &settings_dialog::accepted, this, &main_window::NotifyEmuSettingsChange);
-		connect(&dlg, &settings_dialog::accepted, m_logFrame, &log_frame::LoadSettings);
+		connect(&dlg, &settings_dialog::EmuSettingsApplied, this, &main_window::NotifyEmuSettingsChange);
+		connect(&dlg, &settings_dialog::EmuSettingsApplied, m_logFrame, &log_frame::LoadSettings);
 		dlg.exec();
 	};
 

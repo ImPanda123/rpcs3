@@ -186,9 +186,9 @@ namespace rsx
 			switch (m_detail)
 			{
 			case detail_level::minimal:
-			case detail_level::low: m_titles.text = ""; break;
-			case detail_level::medium: m_titles.text = fmt::format("\n\n%s", title1_medium); break;
-			case detail_level::high: m_titles.text = fmt::format("\n\n%s\n\n\n\n\n\n%s", title1_high, title2); break;
+			case detail_level::low: m_titles.set_text(""); break;
+			case detail_level::medium: m_titles.set_text(fmt::format("\n\n%s", title1_medium)); break;
+			case detail_level::high: m_titles.set_text(fmt::format("\n\n%s\n\n\n\n\n\n%s", title1_high, title2)); break;
 			}
 			m_titles.auto_resize();
 			m_titles.refresh();
@@ -205,6 +205,7 @@ namespace rsx
 			update();
 
 			m_is_initialised = true;
+			visible = true;
 		}
 
 		void perf_metrics_overlay::set_framerate_graph_enabled(bool enabled)
@@ -486,7 +487,7 @@ namespace rsx
 				}
 				}
 
-				m_body.text = perf_text;
+				m_body.set_text(perf_text);
 
 				if (m_body.auto_resize())
 				{
@@ -573,7 +574,7 @@ namespace rsx
 
 		void graph::set_font_size(u16 font_size)
 		{
-			const auto font_name = m_label.get_font()->font_name.c_str();
+			const auto font_name = m_label.get_font()->get_name().data();
 			m_label.set_font(font_name, font_size);
 		}
 
@@ -699,6 +700,8 @@ namespace rsx
 					{
 						perf_overlay = manager->create<rsx::overlays::perf_metrics_overlay>();
 					}
+
+					std::scoped_lock lock(*manager);
 
 					perf_overlay->set_detail_level(perf_settings.level);
 					perf_overlay->set_position(perf_settings.position);

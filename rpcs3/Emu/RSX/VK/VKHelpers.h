@@ -141,7 +141,7 @@ namespace vk
 	VkImageAspectFlags get_aspect_flags(VkFormat format);
 
 	VkSampler null_sampler();
-	image_view* null_image_view(vk::command_buffer&);
+	image_view* null_image_view(vk::command_buffer&, VkImageViewType type);
 	image* get_typeless_helper(VkFormat format, u32 requested_width, u32 requested_height);
 	buffer* get_scratch_buffer(u32 min_required_size = 0);
 	data_heap* get_upload_heap();
@@ -1322,7 +1322,8 @@ private:
 			VkImageTiling tiling,
 			VkImageUsageFlags usage,
 			VkImageCreateFlags image_flags)
-			: m_device(dev), current_layout(initial_layout)
+			: current_layout(initial_layout)
+			, m_device(dev)
 		{
 			info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 			info.imageType = image_type;
@@ -1384,6 +1385,11 @@ private:
 		u32 mipmaps() const
 		{
 			return info.mipLevels;
+		}
+
+		u32 layers() const
+		{
+			return info.arrayLayers;
 		}
 
 		u8 samples() const
@@ -1448,14 +1454,16 @@ private:
 		}
 
 		image_view(VkDevice dev, VkImageViewCreateInfo create_info)
-			: m_device(dev), info(create_info)
+			: info(create_info)
+			, m_device(dev)
 		{
 			create_impl();
 		}
 
 		image_view(VkDevice dev, vk::image* resource,
-			const VkComponentMapping mapping = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A },
-			const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1})
+			VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_MAX_ENUM,
+			const VkComponentMapping& mapping = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A },
+			const VkImageSubresourceRange& range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1})
 			: m_device(dev), m_resource(resource)
 		{
 			info.format = resource->info.format;
@@ -1464,23 +1472,34 @@ private:
 			info.components = mapping;
 			info.subresourceRange = range;
 
-			switch (resource->info.imageType)
+			if (view_type == VK_IMAGE_VIEW_TYPE_MAX_ENUM)
 			{
-			case VK_IMAGE_TYPE_1D:
-				info.viewType = VK_IMAGE_VIEW_TYPE_1D;
-				break;
-			case VK_IMAGE_TYPE_2D:
-				if (resource->info.flags == VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
-					info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-				else
-					info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-				break;
-			case VK_IMAGE_TYPE_3D:
-				info.viewType = VK_IMAGE_VIEW_TYPE_3D;
-				break;
-			default:
-				ASSUME(0);
-				break;
+				switch (resource->info.imageType)
+				{
+				case VK_IMAGE_TYPE_1D:
+					info.viewType = VK_IMAGE_VIEW_TYPE_1D;
+					break;
+				case VK_IMAGE_TYPE_2D:
+					if (resource->info.flags == VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
+						info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+					else if (resource->info.arrayLayers == 1)
+						info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+					else
+						info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+					break;
+				case VK_IMAGE_TYPE_3D:
+					info.viewType = VK_IMAGE_VIEW_TYPE_3D;
+					break;
+				default:
+					ASSUME(0);
+					break;
+				}
+
+				info.subresourceRange.layerCount = resource->info.arrayLayers;
+			}
+			else
+			{
+				info.viewType = view_type;
 			}
 
 			create_impl();
@@ -1586,7 +1605,7 @@ private:
 			const auto range = vk::get_image_subresource_range(0, 0, info.arrayLayers, info.mipLevels, aspect() & mask);
 
 			verify(HERE), range.aspectMask;
-			auto view = std::make_unique<vk::image_view>(*get_current_renderer(), this, real_mapping, range);
+			auto view = std::make_unique<vk::image_view>(*get_current_renderer(), this, VK_IMAGE_VIEW_TYPE_MAX_ENUM, real_mapping, range);
 
 			auto result = view.get();
 			views.emplace(remap_encoding, std::move(view));
@@ -1781,7 +1800,8 @@ private:
 
 	public:
 		framebuffer(VkDevice dev, VkRenderPass pass, u32 width, u32 height, std::vector<std::unique_ptr<vk::image_view>> &&atts)
-			: m_device(dev), attachments(std::move(atts))
+			: attachments(std::move(atts))
+			, m_device(dev)
 		{
 			std::vector<VkImageView> image_view_array(attachments.size());
 			size_t i = 0;
@@ -1827,7 +1847,7 @@ private:
 			if (fbo_images.size() != attachments.size())
 				return false;
 
-			for (int n = 0; n < fbo_images.size(); ++n)
+			for (uint n = 0; n < fbo_images.size(); ++n)
 			{
 				if (attachments[n]->info.image != fbo_images[n]->value ||
 					attachments[n]->info.format != fbo_images[n]->info.format)

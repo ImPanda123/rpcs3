@@ -6,6 +6,7 @@
 #include "Emu/Io/MouseHandler.h"
 #include "Emu/RSX/GSRender.h"
 #include "Utilities/Timer.h"
+#include "Input/pad_thread.h"
 
 LOG_CHANNEL(cellGem);
 
@@ -1221,11 +1222,11 @@ error_code cellGemTrackHues(vm::cptr<u32> req_hues, vm::ptr<u32> res_hues)
 
 	for (u32 i = 0; i < CELL_GEM_MAX_NUM; i++)
 	{
-		if (req_hues[i] == CELL_GEM_DONT_CARE_HUE)
+		if (req_hues[i] == u32{CELL_GEM_DONT_CARE_HUE})
 		{
 
 		}
-		else if (req_hues[i] == CELL_GEM_DONT_TRACK_HUE)
+		else if (req_hues[i] == u32{CELL_GEM_DONT_TRACK_HUE})
 		{
 			gem->controllers[i].enabled_tracking = false;
 			gem->controllers[i].enabled_LED = false;

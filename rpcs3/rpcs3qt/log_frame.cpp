@@ -1,19 +1,23 @@
 ﻿#include "log_frame.h"
 #include "qt_utils.h"
+#include "gui_settings.h"
+
 #include "stdafx.h"
 #include "rpcs3_version.h"
 #include "Utilities/sysinfo.h"
+#include "Utilities/mutex.h"
+#include "Utilities/lockless.h"
 
 #include <QMenu>
 #include <QActionGroup>
 #include <QScrollBar>
-#include <QTabBar>
 #include <QVBoxLayout>
+#include <QTimer>
+#include <QStringBuilder>
+
 #include <sstream>
 #include <deque>
 #include <mutex>
-#include "Utilities/mutex.h"
-#include "Utilities/lockless.h"
 
 extern fs::file g_tty;
 extern atomic_t<s64> g_tty_size;
@@ -438,7 +442,7 @@ void log_frame::UpdateUI()
 		buf.resize(size);
 		buf.resize(m_tty_file.read(&buf.front(), buf.size()));
 
-		if (buf.find_first_of('\0') != -1)
+		if (buf.find_first_of('\0') != umax)
 		{
 			m_tty_file.seek(s64{0} - buf.size(), fs::seek_mode::seek_cur);
 			break;
@@ -627,7 +631,7 @@ bool log_frame::eventFilter(QObject* object, QEvent* event)
 			if (m_find_dialog && m_find_dialog->isVisible())
 				m_find_dialog->close();
 
-			m_find_dialog = std::make_unique<find_dialog>(static_cast<QTextEdit*>(object), this);
+			m_find_dialog.reset(new find_dialog(static_cast<QTextEdit*>(object), this));
 		}
 	}
 

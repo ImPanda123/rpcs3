@@ -22,14 +22,14 @@ namespace rsx
 					});
 				}
 
-				m_visible = false;
+				visible = false;
 				close();
 			};
 
 			fade_animation.active = true;
 		}
 
-		void osk_dialog::initialize_layout(const std::vector<grid_entry_ctor>& layout, const std::string& title, const std::string& initial_text)
+		void osk_dialog::initialize_layout(const std::vector<grid_entry_ctor>& layout, const std::u32string& title, const std::u32string& initial_text)
 		{
 			const u32 cell_count = num_rows * num_columns;
 
@@ -178,8 +178,8 @@ namespace rsx
 				m_btn_cancel.set_image_resource(resource_config::standard_image_resource::circle);
 			}
 
-			m_visible = true;
 			m_update = true;
+			visible = true;
 			exit = false;
 
 			fade_animation.current = color4f(0.f);
@@ -187,7 +187,7 @@ namespace rsx
 			fade_animation.duration = 0.5f;
 			fade_animation.active = true;
 
-			thread_ctrl::spawn("osk input thread", [this]
+			std::lock_guard{m_threadpool_mutex}, m_workers.emplace_back([this]
 			{
 				if (auto error = run_input_loop())
 				{
@@ -370,7 +370,7 @@ namespace rsx
 			}
 			case pad_button::select:
 			{
-				on_shift("");
+				on_shift(U"");
 				break;
 			}
 			case pad_button::start:
@@ -380,12 +380,12 @@ namespace rsx
 			}
 			case pad_button::triangle:
 			{
-				on_space("");
+				on_space(U"");
 				break;
 			}
 			case pad_button::square:
 			{
-				on_backspace("");
+				on_backspace(U"");
 				break;
 			}
 			case pad_button::cross:
@@ -405,7 +405,7 @@ namespace rsx
 
 		void osk_dialog::on_text_changed()
 		{
-			const auto ws = ascii8_to_utf16(m_preview.text);
+			const auto ws = u32string_to_utf16(m_preview.text);
 			const auto length = (ws.length() + 1) * sizeof(char16_t);
 			memcpy(osk_text, ws.c_str(), length);
 
@@ -417,10 +417,10 @@ namespace rsx
 			m_update = true;
 		}
 
-		void osk_dialog::on_default_callback(const std::string& str)
+		void osk_dialog::on_default_callback(const std::u32string& str)
 		{
 			// Append to output text
-			if (m_preview.text == "[Enter Text]")
+			if (m_preview.text == U"[Enter Text]")
 			{
 				m_preview.caret_position = ::narrow<u16>(str.length());
 				m_preview.set_text(str);
@@ -443,17 +443,17 @@ namespace rsx
 			on_text_changed();
 		}
 
-		void osk_dialog::on_shift(const std::string&)
+		void osk_dialog::on_shift(const std::u32string&)
 		{
 			selected_z = (selected_z + 1) % num_layers;
 			m_update = true;
 		}
 
-		void osk_dialog::on_space(const std::string&)
+		void osk_dialog::on_space(const std::u32string&)
 		{
 			if (!(flags & CELL_OSKDIALOG_NO_SPACE))
 			{
-				on_default_callback(" ");
+				on_default_callback(U" ");
 			}
 			else
 			{
@@ -461,7 +461,7 @@ namespace rsx
 			}
 		}
 
-		void osk_dialog::on_backspace(const std::string&)
+		void osk_dialog::on_backspace(const std::u32string&)
 		{
 			if (m_preview.text.empty())
 			{
@@ -472,11 +472,11 @@ namespace rsx
 			on_text_changed();
 		}
 
-		void osk_dialog::on_enter(const std::string&)
+		void osk_dialog::on_enter(const std::u32string&)
 		{
 			if (!(flags & CELL_OSKDIALOG_NO_RETURN))
 			{
-				on_default_callback("\n");
+				on_default_callback(U"\n");
 			}
 			else
 			{
@@ -495,7 +495,7 @@ namespace rsx
 
 		compiled_resource osk_dialog::get_compiled()
 		{
-			if (!m_visible)
+			if (!visible)
 			{
 				return {};
 			}
@@ -617,59 +617,57 @@ namespace rsx
 			std::vector<osk_dialog::grid_entry_ctor> layout =
 			{
 				// Alphanumeric
-				{{"1", "!"}, default_bg, 1},
-				{{"2", "@"}, default_bg, 1},
-				{{"3", "#"}, default_bg, 1},
-				{{"4", "$"}, default_bg, 1},
-				{{"5", "%"}, default_bg, 1},
-				{{"6", "^"}, default_bg, 1},
-				{{"7", "&"}, default_bg, 1},
-				{{"8", "*"}, default_bg, 1},
-				{{"9", "("}, default_bg, 1},
-				{{"0", ")"}, default_bg, 1},
+				{{U"1", U"!"}, default_bg, 1},
+				{{U"2", U"@"}, default_bg, 1},
+				{{U"3", U"#"}, default_bg, 1},
+				{{U"4", U"$"}, default_bg, 1},
+				{{U"5", U"%"}, default_bg, 1},
+				{{U"6", U"^"}, default_bg, 1},
+				{{U"7", U"&"}, default_bg, 1},
+				{{U"8", U"*"}, default_bg, 1},
+				{{U"9", U"("}, default_bg, 1},
+				{{U"0", U")"}, default_bg, 1},
 
 				// Alpha
-				{{"q", "Q"}, default_bg, 1},
-				{{"w", "W"}, default_bg, 1},
-				{{"e", "E"}, default_bg, 1},
-				{{"r", "R"}, default_bg, 1},
-				{{"t", "T"}, default_bg, 1},
-				{{"y", "Y"}, default_bg, 1},
-				{{"u", "U"}, default_bg, 1},
-				{{"i", "I"}, default_bg, 1},
-				{{"o", "O"}, default_bg, 1},
-				{{"p", "P"}, default_bg, 1},
-				{{"a", "A"}, default_bg, 1},
-				{{"s", "S"}, default_bg, 1},
-				{{"d", "D"}, default_bg, 1},
-				{{"f", "F"}, default_bg, 1},
-				{{"g", "G"}, default_bg, 1},
-				{{"h", "H"}, default_bg, 1},
-				{{"j", "J"}, default_bg, 1},
-				{{"k", "K"}, default_bg, 1},
-				{{"l", "L"}, default_bg, 1},
-				{{"'", "\""}, default_bg, 1},
-				{{"z", "Z"}, default_bg, 1},
-				{{"x", "X"}, default_bg, 1},
-				{{"c", "C"}, default_bg, 1},
-				{{"v", "V"}, default_bg, 1},
-				{{"b", "B"}, default_bg, 1},
-				{{"n", "N"}, default_bg, 1},
-				{{"m", "M"}, default_bg, 1},
-				{{"-", "_"}, default_bg, 1},
-				{{"+", "="}, default_bg, 1},
-				{{",", "?"}, default_bg, 1},
+				{{U"q", U"Q"}, default_bg, 1},
+				{{U"w", U"W"}, default_bg, 1},
+				{{U"e", U"E"}, default_bg, 1},
+				{{U"r", U"R"}, default_bg, 1},
+				{{U"t", U"T"}, default_bg, 1},
+				{{U"y", U"Y"}, default_bg, 1},
+				{{U"u", U"U"}, default_bg, 1},
+				{{U"i", U"I"}, default_bg, 1},
+				{{U"o", U"O"}, default_bg, 1},
+				{{U"p", U"P"}, default_bg, 1},
+				{{U"a", U"A"}, default_bg, 1},
+				{{U"s", U"S"}, default_bg, 1},
+				{{U"d", U"D"}, default_bg, 1},
+				{{U"f", U"F"}, default_bg, 1},
+				{{U"g", U"G"}, default_bg, 1},
+				{{U"h", U"H"}, default_bg, 1},
+				{{U"j", U"J"}, default_bg, 1},
+				{{U"k", U"K"}, default_bg, 1},
+				{{U"U", U"U"}, default_bg, 1},
+				{{U"'", U"\""}, default_bg, 1},
+				{{U"z", U"Z"}, default_bg, 1},
+				{{U"x", U"X"}, default_bg, 1},
+				{{U"c", U"C"}, default_bg, 1},
+				{{U"v", U"V"}, default_bg, 1},
+				{{U"b", U"B"}, default_bg, 1},
+				{{U"n", U"N"}, default_bg, 1},
+				{{U"m", U"M"}, default_bg, 1},
+				{{U"-", U"_"}, default_bg, 1},
+				{{U"+", U"="}, default_bg, 1},
+				{{U",", U"?"}, default_bg, 1},
 
 				// Special
-				{{"Shift"}, special2_bg, 2, button_flags::_default, shift_callback },
-				{{"Space"}, special_bg, 4, button_flags::_space, space_callback },
-				{{"Backspace"}, special_bg, 2, button_flags::_default, delete_callback },
-				{{"Enter"}, special2_bg, 2, button_flags::_return, enter_callback },
+				{{U"Shift"}, special2_bg, 2, button_flags::_default, shift_callback },
+				{{U"Space"}, special_bg, 4, button_flags::_space, space_callback },
+				{{U"Backspace"}, special_bg, 2, button_flags::_default, delete_callback },
+				{{U"Enter"}, special2_bg, 2, button_flags::_return, enter_callback },
 			};
 
-			// Narrow to utf-8 as native does not have support for non-ascii glyphs
-			// TODO: Full multibyte string support in all of rsx::overlays (kd-11)
-			initialize_layout(layout, utf16_to_ascii8(message), utf16_to_ascii8(init_text));
+			initialize_layout(layout, utf16_to_u32string(message), utf16_to_u32string(init_text));
 		}
 	}
 }

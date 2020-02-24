@@ -230,6 +230,22 @@ namespace vk
 			fmt::throw_exception("Unknown cull face value: 0x%x" HERE, static_cast<u32>(cfv));
 		}
 	}
+
+	VkImageViewType get_view_type(rsx::texture_dimension_extended type)
+	{
+		switch (type)
+		{
+		case rsx::texture_dimension_extended::texture_dimension_1d:
+			return VK_IMAGE_VIEW_TYPE_1D;
+		case rsx::texture_dimension_extended::texture_dimension_2d:
+			return VK_IMAGE_VIEW_TYPE_2D;
+		case rsx::texture_dimension_extended::texture_dimension_cubemap:
+			return VK_IMAGE_VIEW_TYPE_CUBE;
+		case rsx::texture_dimension_extended::texture_dimension_3d:
+			return VK_IMAGE_VIEW_TYPE_3D;
+		default: ASSUME(0);
+		};
+	}
 }
 
 namespace
@@ -704,15 +720,15 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 
 	if (result.num_flushable > 0)
 	{
-		if (rsx::g_dma_manager.is_current_thread())
+		if (g_fxo->get<rsx::dma_manager>()->is_current_thread())
 		{
 			// The offloader thread cannot handle flush requests
 			verify(HERE), m_queue_status.load() == flush_queue_state::ok;
 
-			m_offloader_fault_range = rsx::g_dma_manager.get_fault_range(is_writing);
+			m_offloader_fault_range = g_fxo->get<rsx::dma_manager>()->get_fault_range(is_writing);
 			m_offloader_fault_cause = (is_writing) ? rsx::invalidation_cause::write : rsx::invalidation_cause::read;
 
-			rsx::g_dma_manager.set_mem_fault_flag();
+			g_fxo->get<rsx::dma_manager>()->set_mem_fault_flag();
 			m_queue_status |= flush_queue_state::deadlock;
 
 			// Wait for deadlock to clear
@@ -721,7 +737,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 				_mm_pause();
 			}
 
-			rsx::g_dma_manager.clear_mem_fault_flag();
+			g_fxo->get<rsx::dma_manager>()->clear_mem_fault_flag();
 			return true;
 		}
 
@@ -1669,14 +1685,15 @@ void VKGSRender::end()
 			}
 			else
 			{
-				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+				const VkImageViewType view_type = vk::get_view_type(current_fragment_program.get_texture_dimension(i));
+				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 					i,
 					::glsl::program_domain::glsl_fragment_program,
 					m_current_frame->descriptor_set);
 
 				if (current_fragment_program.redirected_textures & (1 << i))
 				{
-					m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+					m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 						i,
 						::glsl::program_domain::glsl_fragment_program,
 						m_current_frame->descriptor_set,
@@ -1692,7 +1709,8 @@ void VKGSRender::end()
 		{
 			if (!rsx::method_registers.vertex_textures[i].enabled())
 			{
-				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+				const auto view_type = vk::get_view_type(current_vertex_program.get_texture_dimension(i));
+				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 					i,
 					::glsl::program_domain::glsl_vertex_program,
 					m_current_frame->descriptor_set);
@@ -1712,7 +1730,9 @@ void VKGSRender::end()
 			if (!image_ptr)
 			{
 				rsx_log.error("Texture upload failed to vtexture index %d. Binding null sampler.", i);
-				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+				const auto view_type = vk::get_view_type(current_vertex_program.get_texture_dimension(i));
+
+				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 					i,
 					::glsl::program_domain::glsl_vertex_program,
 					m_current_frame->descriptor_set);
@@ -2342,7 +2362,7 @@ bool VKGSRender::load_program()
 	if (rsx::method_registers.cull_face_enabled())
 		properties.state.enable_cull_face(vk::get_cull_face(rsx::method_registers.cull_face_mode()));
 
-	for (int index = 0; index < m_draw_buffers.size(); ++index)
+	for (uint index = 0; index < m_draw_buffers.size(); ++index)
 	{
 		bool color_mask_b = rsx::method_registers.color_mask_b(index);
 		bool color_mask_g = rsx::method_registers.color_mask_g(index);
@@ -2648,7 +2668,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 {
 	// Workaround for deadlock occuring during RSX offloader fault
 	// TODO: Restructure command submission infrastructure to avoid this condition
-	const bool sync_success = rsx::g_dma_manager.sync();
+	const bool sync_success = g_fxo->get<rsx::dma_manager>()->sync();
 	const VkBool32 force_flush = !sync_success;
 
 	if (vk::test_status_interrupt(vk::heap_dirty))

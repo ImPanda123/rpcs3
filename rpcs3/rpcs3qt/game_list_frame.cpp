@@ -6,6 +6,12 @@
 #include "custom_table_widget_item.h"
 #include "input_dialog.h"
 #include "localized.h"
+#include "progress_dialog.h"
+#include "persistent_settings.h"
+#include "emu_settings.h"
+#include "gui_settings.h"
+#include "game_list.h"
+#include "game_list_grid.h"
 
 #include "Emu/Memory/vm.h"
 #include "Emu/System.h"
@@ -35,12 +41,13 @@ LOG_CHANNEL(sys_log, "SYS");
 
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
 
-game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std::shared_ptr<emu_settings> emuSettings, std::shared_ptr<persistent_settings> persistent_settings, QWidget *parent)
+game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std::shared_ptr<emu_settings> emuSettings, std::shared_ptr<persistent_settings> persistent_settings, QWidget* parent)
 	: custom_dock_widget(tr("Game List"), parent)
 	, m_gui_settings(guiSettings)
 	, m_emu_settings(emuSettings)
 	, m_persistent_settings(persistent_settings)
 {
+	m_Icon_Size       = gui::gl_icon_size_min; // ensure a valid size
 	m_isListLayout    = m_gui_settings->GetValue(gui::gl_listMode).toBool();
 	m_Margin_Factor   = m_gui_settings->GetValue(gui::gl_marginFactor).toReal();
 	m_Text_Factor     = m_gui_settings->GetValue(gui::gl_textFactor).toReal();
@@ -589,24 +596,22 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 			}
 			else
 			{
-				game_list_log.warning("Invalid disc path registered for %s: %s", pair.first.Scalar(), pair.second.Scalar());
+				game_list_log.trace("Invalid disc path registered for %s: %s", pair.first.Scalar(), pair.second.Scalar());
 			}
 		}
+
+		// Remove duplicates
+		sort(path_list.begin(), path_list.end());
+		path_list.erase(unique(path_list.begin(), path_list.end()), path_list.end());
 
 		QSet<QString> serials;
 
 		QMutex mutex_cat;
 
-		QList<size_t> indices;
-		for (size_t i = 0; i < path_list.size(); ++i)
-			indices.append(i);
-
 		lf_queue<game_info> games;
 
-		QtConcurrent::blockingMap(indices, [&](size_t& i)
+		QtConcurrent::blockingMap(path_list, [&](const std::string& dir)
 		{
-			const std::string dir = path_list[i];
-
 			const Localized thread_localized;
 
 			try
@@ -1059,7 +1064,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	connect(configure, &QAction::triggered, [=, this]()
 	{
 		settings_dialog dlg(m_gui_settings, m_emu_settings, 0, this, &currGame);
-		if (dlg.exec() == QDialog::Accepted)
+		connect(&dlg, &settings_dialog::EmuSettingsApplied, [this, gameinfo]()
 		{
 			if (!gameinfo->hasCustomConfig)
 			{
@@ -1067,7 +1072,8 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 				ShowCustomConfigIcon(gameinfo);
 			}
 			Q_EMIT NotifyEmuSettingsChange();
-		}
+		});
+		dlg.exec();
 	});
 	connect(pad_configure, &QAction::triggered, [=, this]()
 	{
@@ -1550,7 +1556,7 @@ void game_list_frame::BatchRemoveSPUCaches()
 		return;
 	}
 
-	progress_dialog* pdlg = new progress_dialog(tr("SPU Cache Batch Removal"), tr("Removing all SPU caches"), tr("Cancel"), 0, total, this);
+	progress_dialog* pdlg = new progress_dialog(tr("SPU Cache Batch Removal"), tr("Removing all SPU caches"), tr("Cancel"), 0, total, true, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
 	pdlg->show();
@@ -1809,13 +1815,8 @@ void game_list_frame::RepaintIcons(const bool& fromSettings)
 		}
 	}
 
-	QList<int> indices;
-	for (int i = 0; i < m_game_data.size(); ++i)
-		indices.append(i);
-
-	QtConcurrent::blockingMap(indices, [this](int& i)
+	QtConcurrent::blockingMap(m_game_data, [this](const game_info& game)
 	{
-		auto game = m_game_data[i];
 		const QColor color = getGridCompatibilityColor(game->compat.color);
 		game->pxmap = PaintedPixmap(game->icon, game->hasCustomConfig, game->hasCustomPadConfig, color);
 	});

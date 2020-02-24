@@ -304,7 +304,7 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 				continue;
 			}
 
-			const bool first = ls_off == -8192;
+			const bool first = ls_off == u32{} - 8192;
 
 			// Ensure small distance for disp8*N
 			if (j - ls_off >= 8192)
@@ -429,7 +429,7 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 					continue;
 				}
 
-				const bool first = ls_off == -4096;
+				const bool first = ls_off == u32{0} - 4096;
 
 				// Ensure small distance for disp8*N
 				if (j - ls_off >= 4096)
@@ -3399,7 +3399,6 @@ void spu_recompiler::HGT(spu_opcode_t op)
 		c->lea(addr->r64(), get_pc(pos));
 		c->and_(*addr, 0x3fffc);
 		c->mov(SPU_OFF_32(pc), *addr);
-		c->lock().bts(SPU_OFF_32(status), 2);
 		c->mov(addr->r64(), reinterpret_cast<u64>(vm::base(0xffdead00)));
 		c->mov(asmjit::x86::dword_ptr(addr->r64()), "HALT"_u32);
 		c->jmp(ret);
@@ -3741,7 +3740,6 @@ void spu_recompiler::HLGT(spu_opcode_t op)
 		c->lea(addr->r64(), get_pc(pos));
 		c->and_(*addr, 0x3fffc);
 		c->mov(SPU_OFF_32(pc), *addr);
-		c->lock().bts(SPU_OFF_32(status), 2);
 		c->mov(addr->r64(), reinterpret_cast<u64>(vm::base(0xffdead00)));
 		c->mov(asmjit::x86::dword_ptr(addr->r64()), "HALT"_u32);
 		c->jmp(ret);
@@ -4071,7 +4069,6 @@ void spu_recompiler::HEQ(spu_opcode_t op)
 		c->lea(addr->r64(), get_pc(pos));
 		c->and_(*addr, 0x3fffc);
 		c->mov(SPU_OFF_32(pc), *addr);
-		c->lock().bts(SPU_OFF_32(status), 2);
 		c->mov(addr->r64(), reinterpret_cast<u64>(vm::base(0xffdead00)));
 		c->mov(asmjit::x86::dword_ptr(addr->r64()), "HALT"_u32);
 		c->jmp(ret);
@@ -4593,7 +4590,6 @@ void spu_recompiler::HGTI(spu_opcode_t op)
 		c->lea(addr->r64(), get_pc(pos));
 		c->and_(*addr, 0x3fffc);
 		c->mov(SPU_OFF_32(pc), *addr);
-		c->lock().bts(SPU_OFF_32(status), 2);
 		c->mov(addr->r64(), reinterpret_cast<u64>(vm::base(0xffdead00)));
 		c->mov(asmjit::x86::dword_ptr(addr->r64()), "HALT"_u32);
 		c->jmp(ret);
@@ -4638,7 +4634,6 @@ void spu_recompiler::HLGTI(spu_opcode_t op)
 		c->lea(addr->r64(), get_pc(pos));
 		c->and_(*addr, 0x3fffc);
 		c->mov(SPU_OFF_32(pc), *addr);
-		c->lock().bts(SPU_OFF_32(status), 2);
 		c->mov(addr->r64(), reinterpret_cast<u64>(vm::base(0xffdead00)));
 		c->mov(asmjit::x86::dword_ptr(addr->r64()), "HALT"_u32);
 		c->jmp(ret);
@@ -4701,7 +4696,6 @@ void spu_recompiler::HEQI(spu_opcode_t op)
 		c->lea(addr->r64(), get_pc(pos));
 		c->and_(*addr, 0x3fffc);
 		c->mov(SPU_OFF_32(pc), *addr);
-		c->lock().bts(SPU_OFF_32(status), 2);
 		c->mov(addr->r64(), reinterpret_cast<u64>(vm::base(0xffdead00)));
 		c->mov(asmjit::x86::dword_ptr(addr->r64()), "HALT"_u32);
 		c->jmp(ret);

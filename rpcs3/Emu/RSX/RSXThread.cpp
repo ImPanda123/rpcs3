@@ -12,6 +12,7 @@
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/Modules/cellGcmSys.h"
 #include "Overlays/overlay_perf_metrics.h"
+#include "Utilities/date_time.h"
 
 #include "Utilities/span.h"
 #include "Utilities/StrUtil.h"
@@ -39,8 +40,6 @@ extern thread_local std::string(*g_tls_log_prefix)();
 namespace rsx
 {
 	std::function<bool(u32 addr, bool is_writing)> g_access_violation_handler;
-
-	dma_manager g_dma_manager;
 
 	u32 get_address(u32 offset, u32 location, const char* from)
 	{
@@ -481,7 +480,7 @@ namespace rsx
 
 		rsx::overlays::reset_performance_overlay();
 
-		g_dma_manager.init();
+		g_fxo->get<rsx::dma_manager>()->init();
 		on_init_thread();
 
 		method_registers.init();
@@ -499,7 +498,7 @@ namespace rsx
 
 		vblank_count = 0;
 
-		thread_ctrl::spawn("VBlank Thread", [this]()
+		auto vblank_body = [this]()
 		{
 			// See sys_timer_usleep for details
 #ifdef __linux__
@@ -563,9 +562,11 @@ namespace rsx
 
 				thread_ctrl::wait_for(100);
 			}
-		});
+		};
 
-		thread_ctrl::spawn("RSX Decompiler Thread", [this]
+		g_fxo->init<named_thread<decltype(vblank_body)>>("VBlank Thread", std::move(vblank_body));
+
+		auto decomp_body = [this]
 		{
 			if (g_cfg.video.disable_asynchronous_shader_compiler)
 			{
@@ -596,7 +597,9 @@ namespace rsx
 			}
 
 			on_decompiler_exit();
-		});
+		};
+
+		g_fxo->init<named_thread<decltype(decomp_body)>>("RSX Decompiler Thread", std::move(decomp_body));
 
 		// Raise priority above other threads
 		thread_ctrl::set_native_priority(1);
@@ -615,9 +618,7 @@ namespace rsx
 			// Wait for external pause events
 			if (external_interrupt_lock)
 			{
-				external_interrupt_ack.store(true);
-
-				while (external_interrupt_lock) _mm_pause();
+				wait_pause();
 			}
 
 			// Note a possible rollback address
@@ -666,7 +667,7 @@ namespace rsx
 		capture_current_frame = false;
 
 		m_rsx_thread_exiting = true;
-		g_dma_manager.join();
+		g_fxo->get<rsx::dma_manager>()->join();
 	}
 
 	void thread::fill_scale_offset_data(void *buffer, bool flip_y) const
@@ -1025,7 +1026,7 @@ namespace rsx
 
 		// NOTE: surface_target_a is index 1 but is not MRT since only one surface is active
 		bool color_write_enabled = false;
-		for (int i = 0; i < mrt_buffers.size(); ++i)
+		for (uint i = 0; i < mrt_buffers.size(); ++i)
 		{
 			if (rsx::method_registers.color_write_enabled(i))
 			{
@@ -2093,7 +2094,7 @@ namespace rsx
 				const u32 data_size = range.second * block.attribute_stride;
 				const u32 vertex_base = range.first * block.attribute_stride;
 
-				g_dma_manager.copy(persistent, vm::_ptr<char>(block.real_offset_address) + vertex_base, data_size);
+				g_fxo->get<rsx::dma_manager>()->copy(persistent, vm::_ptr<char>(block.real_offset_address) + vertex_base, data_size);
 				persistent += data_size;
 			}
 		}
@@ -2251,7 +2252,7 @@ namespace rsx
 		m_graphics_state |= rsx::pipeline_state::fragment_constants_dirty;
 
 		// DMA sync; if you need this, don't use MTRSX
-		// g_dma_manager.sync();
+		// g_fxo->get<rsx::dma_manager>()->sync();
 
 		//TODO: On sync every sub-unit should finish any pending tasks
 		//Might cause zcull lockup due to zombie 'unclaimed reports' which are not forcefully removed currently
@@ -2468,10 +2469,7 @@ namespace rsx
 	//Pause/cont wrappers for FIFO ctrl. Never call this from rsx thread itself!
 	void thread::pause()
 	{
-		while (external_interrupt_lock.exchange(true)) [[unlikely]]
-		{
-			_mm_pause();
-		}
+		external_interrupt_lock++;
 
 		while (!external_interrupt_ack)
 		{
@@ -2480,14 +2478,34 @@ namespace rsx
 
 			_mm_pause();
 		}
-
-		external_interrupt_ack.store(false);
 	}
 
 	void thread::unpause()
 	{
 		// TODO: Clean this shit up
-		external_interrupt_lock.store(false);
+		external_interrupt_lock--;
+	}
+
+	void thread::wait_pause()
+	{
+		do
+		{
+			if (g_cfg.video.multithreaded_rsx)
+			{
+				g_fxo->get<rsx::dma_manager>()->sync();
+			}
+
+			external_interrupt_ack.store(true);
+
+			while (external_interrupt_lock)
+			{
+				// TODO: Investigate non busy-spinning method
+				_mm_pause();
+			}
+
+			external_interrupt_ack.store(false);
+		}
+		while (external_interrupt_lock);
 	}
 
 	u32 thread::get_load()
@@ -3074,7 +3092,7 @@ namespace rsx
 
 			if (!sync_address)
 			{
-				if (hint || ptimer->async_tasks_pending >= max_safe_queue_depth)
+				if (hint || ptimer->async_tasks_pending + 0u >= max_safe_queue_depth)
 				{
 					// Prepare the whole queue for reading. This happens when zcull activity is disabled or queue is too long
 					for (auto It = m_pending_writes.rbegin(); It != m_pending_writes.rend(); ++It)
@@ -3438,7 +3456,7 @@ namespace rsx
 		void conditional_render_eval::eval_result(::rsx::thread* pthr)
 		{
 			vm::ptr<CellGcmReportData> result = vm::cast(eval_address);
-			const bool failed = (result->value == 0);
+			const bool failed = (result->value == 0u);
 			set_eval_result(pthr, failed);
 		}
 	}
