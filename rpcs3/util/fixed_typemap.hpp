@@ -148,6 +148,16 @@ namespace stx
 			}
 		}
 
+		// Check if object is not initialized but shall be initialized first (to use in initializing other objects)
+		template <typename T>
+		void need() noexcept
+		{
+			if (!get<T>())
+			{
+				init<T>();
+			}
+		}
+
 		// Explicitly (re)initialize object of type T possibly with dynamic type As and arguments
 		template <typename T, typename As = T, typename... Args>
 		As* init(Args&&... args) noexcept
@@ -165,7 +175,16 @@ namespace stx
 			return obj;
 		}
 
-		// Obtain object pointer (the only thread safe function)
+		// CTAD adaptor for init (see init description), accepts template not type
+		template <template <class...> typename Template, typename... Args>
+		auto init(Args&&... args) noexcept
+		{
+			// Deduce the type from given template and its arguments
+			using T = decltype(Template(std::forward<Args>(args)...));
+			return init<T>(std::forward<Args>(args)...);
+		}
+
+		// Obtain object pointer (thread safe just against other get calls)
 		template <typename T>
 		T* get() const noexcept
 		{

@@ -1,7 +1,8 @@
 ﻿#include "stdafx.h"
-#include "overlays.h"
+#include "overlay_message_dialog.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
+#include "Emu/Cell/ErrorCodes.h"
 
 namespace rsx
 {
@@ -239,10 +240,11 @@ namespace rsx
 			}
 			else
 			{
-				std::scoped_lock lock(m_threadpool_mutex);
 				if (!exit)
 				{
-					m_workers.emplace_back([&]()
+					thread_count++;
+
+					g_fxo->init<named_thread>("MsgDialog Thread", [&]()
 					{
 						if (interactive)
 						{
@@ -252,18 +254,27 @@ namespace rsx
 							{
 								rsx_log.error("Dialog input loop exited with error code=%d", error);
 							}
-
-							verify(HERE), ref.get() == static_cast<overlay*>(this);
 						}
 						else
 						{
-							while (!exit)
+							while (!exit && thread_ctrl::state() == thread_state::created)
 							{
 								refresh();
 
 								// Only update the screen at about 60fps since updating it everytime slows down the process
 								std::this_thread::sleep_for(16ms);
+
+								if (!g_fxo->get<display_manager>())
+								{
+									rsx_log.fatal("display_manager was improperly destroyed");
+									return;
+								}
 							}
+						}
+
+						if (!--thread_count)
+						{
+							thread_count.notify_all();
 						}
 					});
 				}
