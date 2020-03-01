@@ -1,13 +1,27 @@
 ﻿#pragma once
 
 #include <memory>
+#include <typeinfo>
 #include <utility>
 #include <type_traits>
-#include <algorithm>
 #include <util/typeindices.hpp>
 
 namespace stx
 {
+	namespace detail
+	{
+		// Destroy list element
+		struct destroy_info
+		{
+			void** object_pointer;
+			unsigned long long created;
+			void(*destroy)(void*& ptr) noexcept;
+			const char* name;
+
+			static void sort_by_reverse_creation_order(destroy_info* begin, destroy_info* end);
+		};
+	}
+
 	// Typemap with exactly one object of each used type, created on init() and destroyed on clear()
 	template <typename /*Tag*/, bool Report = true>
 	class manual_fixed_typemap
@@ -51,10 +65,20 @@ namespace stx
 			}
 		};
 
+		// Raw pointers to existing objects (may be nullptr)
 		std::unique_ptr<void*[]> m_list;
 
+		// Creation order for each object (used to reverse destruction order)
 		std::unique_ptr<unsigned long long[]> m_order;
+
+		// Used to generate creation order (increased on every construction)
 		unsigned long long m_init_count = 0;
+
+		// Body is somewhere else if enabled
+		void init_reporter(const char* name, unsigned long long created) const noexcept;
+
+		// Body is somewhere else if enabled
+		void destroy_reporter(const char* name, unsigned long long created) const noexcept;
 
 	public:
 		constexpr manual_fixed_typemap() noexcept = default;
@@ -101,14 +125,7 @@ namespace stx
 				return;
 			}
 
-			// Destroy list element
-			struct destroy_info
-			{
-				void** object_pointer;
-				unsigned long long created;
-				void(*destroy)(void*& ptr) noexcept;
-				const char* name;
-			};
+			using detail::destroy_info;
 
 			auto all_data = std::make_unique<destroy_info[]>(stx::typelist<typeinfo>().count());
 
@@ -135,11 +152,7 @@ namespace stx
 			}
 
 			// Sort destroy list according to absolute creation order
-			std::sort(all_data.get(), all_data.get() + _max, [](const destroy_info& a, const destroy_info& b)
-			{
-				// Destroy order is the inverse of creation order
-				return a.created > b.created;
-			});
+			destroy_info::sort_by_reverse_creation_order(all_data.get(), all_data.get() + _max);
 
 			// Destroy objects in correct order
 			for (unsigned i = 0; i < _max; i++)
@@ -148,6 +161,9 @@ namespace stx
 					destroy_reporter(all_data[i].name, all_data[i].created);
 				all_data[i].destroy(*all_data[i].object_pointer);
 			}
+
+			// Reset creation order since it now may be printed
+			m_init_count = 0;
 		}
 
 		// Default initialize all objects if possible and not already initialized
@@ -209,11 +225,5 @@ namespace stx
 		{
 			return static_cast<T*>(m_list[stx::typeindex<typeinfo, std::decay_t<T>>()]);
 		}
-
-		// Body is somewhere else if enabled
-		void init_reporter(const char* name, unsigned long long created);
-
-		// Body is somewhere else if enabled
-		void destroy_reporter(const char* name, unsigned long long created);
 	};
 }

@@ -2,6 +2,7 @@
 
 #include "types.h"
 #include "util/atomic.hpp"
+#include "util/shared_cptr.hpp"
 
 #include <string>
 #include <memory>
@@ -37,8 +38,7 @@ enum class thread_class : u32
 enum class thread_state : u32
 {
 	created,  // Initial state
-	detached, // The thread has been detached to destroy its own named_thread object (can be dangerously misused)
-	aborting, // The thread has been joined in the destructor or explicitly aborted (mutually exclusive with detached)
+	aborting, // The thread has been joined in the destructor or explicitly aborted
 	finished  // Final state, always set at the end of thread execution
 };
 
@@ -81,13 +81,6 @@ struct result_storage<void>
 template <class Context, typename... Args>
 using result_storage_t = result_storage<std::invoke_result_t<Context, Args...>>;
 
-// Detect on_cleanup() static member function (should return void) (in C++20 can use destroying delete instead)
-template <typename T, typename = void>
-struct thread_on_cleanup : std::bool_constant<false> {};
-
-template <typename T>
-struct thread_on_cleanup<T, decltype(named_thread<T>::on_cleanup(std::declval<named_thread<T>*>()))> : std::bool_constant<true> {};
-
 template <typename T, typename = void>
 struct thread_thread_name : std::bool_constant<false> {};
 
@@ -128,7 +121,7 @@ class thread_base
 	atomic_t<const void*> m_state_notifier{nullptr};
 
 	// Thread name
-	lf_value<std::string> m_name;
+	stx::atomic_cptr<std::string> m_tname;
 
 	//
 	atomic_t<u64> m_cycles = 0;
@@ -178,39 +171,39 @@ class thread_ctrl final
 	// Target cpu core layout
 	static atomic_t<native_core_arrangement> g_native_core_layout;
 
-	// Global thread counter
-	static inline atomic_t<u64> g_thread_count = 0;
-
 	// Internal waiting function, may throw. Infinite value is -1.
 	static void _wait_for(u64 usec, bool alert);
 
 	friend class thread_base;
 
+	// Optimized get_name() for logging
+	static std::string get_name_cached();
+
 public:
 	// Get current thread name
-	static std::string_view get_name()
+	static std::string get_name()
 	{
-		return g_tls_this_thread->m_name.get();
+		return *g_tls_this_thread->m_tname.load();
 	}
 
 	// Get thread name
 	template <typename T>
-	static std::string_view get_name(const named_thread<T>& thread)
+	static std::string get_name(const named_thread<T>& thread)
 	{
-		return static_cast<const thread_base&>(thread).m_name.get();
+		return *static_cast<const thread_base&>(thread).m_tname.load();
 	}
 
 	// Set current thread name (not recommended)
 	static void set_name(std::string_view name)
 	{
-		g_tls_this_thread->m_name.assign(name);
+		g_tls_this_thread->m_tname.store(stx::shared_cptr<std::string>::make(name));
 	}
 
 	// Set thread name (not recommended)
 	template <typename T>
 	static void set_name(named_thread<T>& thread, std::string_view name)
 	{
-		static_cast<thread_base&>(thread).m_name.assign(name);
+		static_cast<thread_base&>(thread).m_tname.store(stx::shared_cptr<std::string>::make(name));
 	}
 
 	template <typename T>
@@ -264,11 +257,6 @@ public:
 		return g_tls_this_thread;
 	}
 
-	static u64 get_count()
-	{
-		return g_thread_count.load();
-	}
-
 	// Detect layout
 	static void detect_cpu_layout();
 
@@ -301,15 +289,7 @@ class named_thread final : public Context, result_storage_t<Context>, thread_bas
 		// Perform self-cleanup if necessary
 		if (_this->entry_point())
 		{
-			// Call on_cleanup() static member function if it's available
-			if constexpr (thread_on_cleanup<Context>())
-			{
-				Context::on_cleanup(_this);
-			}
-			else
-			{
-				delete _this;
-			}
+			delete _this;
 		}
 
 		thread::finalize();
@@ -422,10 +402,12 @@ public:
 		return thread::m_state.load();
 	}
 
-	// Try to abort/detach
+	// Try to abort by assigning thread_state::aborting (UB if assigning different state)
 	named_thread& operator=(thread_state s)
 	{
-		if (s < thread_state::finished && thread::m_state.compare_and_swap_test(thread_state::created, s))
+		ASSUME(s == thread_state::aborting);
+
+		if (s == thread_state::aborting && thread::m_state.compare_and_swap_test(thread_state::created, s))
 		{
 			if (s == thread_state::aborting)
 			{
@@ -439,6 +421,7 @@ public:
 	// Context type doesn't need virtual destructor
 	~named_thread()
 	{
+		// Assign aborting state forcefully
 		operator=(thread_state::aborting);
 		thread::join();
 
@@ -446,5 +429,89 @@ public:
 		{
 			result::destroy();
 		}
+	}
+};
+
+// Group of named threads, similar to named_thread
+template <class Context>
+class named_thread_group final
+{
+	using Thread = named_thread<Context>;
+
+	const u32 m_count;
+
+	Thread* m_threads;
+
+public:
+	// Lambda constructor, also the implicit deduction guide candidate
+	named_thread_group(std::string_view name, u32 count, const Context& f)
+		: m_count(count)
+		, m_threads(nullptr)
+	{
+		if (count == 0)
+		{
+			return;
+		}
+
+		m_threads = static_cast<Thread*>(::operator new(sizeof(Thread) * m_count, std::align_val_t{alignof(Thread)}));
+
+		// Create all threads
+		for (u32 i = 0; i < m_count; i++)
+		{
+			new (static_cast<void*>(m_threads + i)) Thread(std::string(name) + std::to_string(i + 1), f);
+		}
+	}
+
+	named_thread_group(const named_thread_group&) = delete;
+
+	named_thread_group& operator=(const named_thread_group&) = delete;
+
+	// Wait for completion
+	void join() const
+	{
+		for (u32 i = 0; i < m_count; i++)
+		{
+			std::as_const(*std::launder(m_threads + i))();
+		}
+	}
+
+	// Join and access specific thread
+	auto operator[](u32 index) const
+	{
+		return std::as_const(*std::launder(m_threads + index))();
+	}
+
+	// Join and access specific thread
+	auto operator[](u32 index)
+	{
+		return (*std::launder(m_threads + index))();
+	}
+
+	// Dumb iterator
+	auto begin()
+	{
+		return std::launder(m_threads);
+	}
+
+	// Dumb iterator
+	auto end()
+	{
+		return m_threads + m_count;
+	}
+
+	u32 size() const
+	{
+		return m_count;
+	}
+
+	~named_thread_group()
+	{
+		// Destroy all threads (it should join them)
+		for (u32 i = 0; i < m_count; i++)
+		{
+			std::launder(m_threads + i)->~Thread();
+		}
+
+		::operator delete(static_cast<void*>(m_threads), std::align_val_t{alignof(Thread)});
 	}
 };

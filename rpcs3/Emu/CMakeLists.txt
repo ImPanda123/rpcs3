@@ -30,6 +30,7 @@ target_sources(rpcs3_emu PRIVATE
 	../util/atomic.cpp
 	../util/atomic2.cpp
 	../util/shared_cptr.cpp
+	../util/fixed_typemap.cpp
 	../../Utilities/bin_patch.cpp
 	../../Utilities/cond.cpp
 	../../Utilities/Config.cpp
@@ -347,6 +348,7 @@ target_sources(rpcs3_emu PRIVATE
 	Io/PadHandler.cpp
 	Io/usb_device.cpp
 	Io/Skylander.cpp
+	Io/GHLtar.cpp
 )
 
 

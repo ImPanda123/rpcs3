@@ -91,6 +91,7 @@ void fmt_class_string<game_boot_result>::format(std::string& out, u64 arg)
 		case game_boot_result::install_failed: return "Game install failed";
 		case game_boot_result::decryption_error: return "Failed to decrypt content";
 		case game_boot_result::file_creation_error: return "Could not create important files";
+		case game_boot_result::firmware_missing: return "Firmware is missing";
 		}
 		return unknown;
 	});
@@ -217,18 +218,30 @@ void Emulator::Init()
 
 	// Initialize patch engine
 	g_fxo->init<patch_engine>()->append(fs::get_config_dir() + "/patch.yml");
+}
 
-	// Initialize progress dialog server (TODO)
-	if (g_progr.exchange("") == nullptr)
+namespace
+{
+	struct progress_dialog_server
 	{
-		std::thread server([]()
+		void operator()()
 		{
-			while (true)
+			while (thread_ctrl::state() != thread_state::aborting)
 			{
 				// Wait for the start condition
 				while (!g_progr_ftotal && !g_progr_ptotal)
 				{
+					if (thread_ctrl::state() == thread_state::aborting)
+					{
+						break;
+					}
+
 					std::this_thread::sleep_for(5ms);
+				}
+
+				if (thread_ctrl::state() == thread_state::aborting)
+				{
+					break;
 				}
 
 				// Initialize message dialog
@@ -260,7 +273,7 @@ void Emulator::Init()
 				u32 value = 0;
 
 				// Update progress
-				while (true)
+				while (thread_ctrl::state() != thread_state::aborting)
 				{
 					if (ftotal != g_progr_ftotal || fdone != g_progr_fdone || ptotal != g_progr_ptotal || pdone != g_progr_pdone)
 					{
@@ -307,6 +320,11 @@ void Emulator::Init()
 					std::this_thread::sleep_for(10ms);
 				}
 
+				if (thread_ctrl::state() == thread_state::aborting)
+				{
+					break;
+				}
+
 				// Cleanup
 				g_progr_ftotal -= fdone;
 				g_progr_fdone  -= fdone;
@@ -321,10 +339,10 @@ void Emulator::Init()
 					});
 				}
 			}
-		});
+		}
 
-		server.detach();
-	}
+		static auto constexpr thread_name = "Progress Dialog Server"sv;
+	};
 }
 
 const bool Emulator::SetUsr(const std::string& user)
@@ -884,6 +902,11 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			sys_log.notice("Hdd1: %s", vfs::get("/dev_hdd1"));
 		}
 
+		if (!fs::is_file(g_cfg.vfs.get_dev_flash() + "sys/external/liblv2.sprx"))
+		{
+			return game_boot_result::firmware_missing;
+		}
+
 		// Special boot mode (directory scan)
 		if (!add_only && fs::is_dir(m_path))
 		{
@@ -907,9 +930,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 
 				std::vector<std::pair<std::string, u64>> file_queue;
 				file_queue.reserve(2000);
-
-				std::queue<named_thread<std::function<void()>>> thread_queue;
-				const uint max_threads = std::thread::hardware_concurrency();
 
 				// Initialize progress dialog
 				g_progr = "Scanning directories for SPRX libraries...";
@@ -958,57 +978,46 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 
 				g_progr = "Compiling PPU modules";
 
-				atomic_t<u32> worker_count = 0;
+				atomic_t<std::size_t> fnext = 0;
 
-				for (std::size_t i = 0; i < file_queue.size(); i++)
+				named_thread_group workers("SPRX Worker ", GetMaxThreads(), [&]
 				{
-					const auto& path = file_queue[i].first;
-
-					sys_log.notice("Trying to load SPRX: %s", path);
-
-					// Load MSELF or SPRX
-					fs::file src{path};
-
-					if (file_queue[i].second == 0)
+					for (std::size_t func_i = fnext++; func_i < file_queue.size(); func_i = fnext++)
 					{
-						// Some files may fail to decrypt due to the lack of klic
-						src = decrypt_self(std::move(src));
-					}
+						const auto& path = std::as_const(file_queue)[func_i].first;
 
-					const ppu_prx_object obj = src;
+						sys_log.notice("Trying to load SPRX: %s", path);
 
-					if (obj == elf_error::ok)
-					{
-						if (auto prx = ppu_load_prx(obj, path))
+						// Load MSELF or SPRX
+						fs::file src{path};
+
+						if (file_queue[func_i].second == 0)
 						{
-							worker_count++;
-
-							while (worker_count > max_threads)
-							{
-								std::this_thread::sleep_for(10ms);
-							}
-
-							thread_queue.emplace("Worker " + std::to_string(thread_queue.size()), [_prx = std::move(prx), &worker_count]
-							{
-								ppu_initialize(*_prx);
-								ppu_unload_prx(*_prx);
-								g_progr_fdone++;
-								worker_count--;
-							});
-
-							continue;
+							// Some files may fail to decrypt due to the lack of klic
+							src = decrypt_self(std::move(src));
 						}
-					}
 
-					sys_log.error("Failed to load SPRX '%s' (%s)", path, obj.get_error());
-					g_progr_fdone++;
-				}
+						const ppu_prx_object obj = src;
+
+						if (obj == elf_error::ok)
+						{
+							if (auto prx = ppu_load_prx(obj, path))
+							{
+								ppu_initialize(*prx);
+								ppu_unload_prx(*prx);
+								g_progr_fdone++;
+								continue;
+							}
+						}
+
+						sys_log.error("Failed to load SPRX '%s' (%s)", path, obj.get_error());
+						g_progr_fdone++;
+						continue;
+					}
+				});
 
 				// Join every thread
-				while (!thread_queue.empty())
-				{
-					thread_queue.pop();
-				}
+				workers.join();
 
 				// Exit "process"
 				Emu.CallAfter([]
@@ -1638,12 +1647,6 @@ void Emulator::Stop(bool restart)
 	cpu_thread::stop_all();
 	g_fxo->reset();
 
-	while (u32 x = thread_ctrl::get_count())
-	{
-		sys_log.fatal("Waiting for %u threads...", x);
-		std::this_thread::sleep_for(300ms);
-	}
-
 	sys_log.notice("All threads have been stopped.");
 
 	lv2_obj::cleanup();
@@ -1708,6 +1711,13 @@ std::string Emulator::GetFormattedTitle(double fps) const
 	return rpcs3::get_formatted_title(title_data);
 }
 
+u32 Emulator::GetMaxThreads() const
+{
+	u32 max_threads = static_cast<u32>(g_cfg.core.llvm_threads);
+	u32 thread_count = max_threads > 0 ? std::min(max_threads, std::thread::hardware_concurrency()) : std::thread::hardware_concurrency();
+	return thread_count;
+}
+
 s32 error_code::error_report(const fmt_type_info* sup, u64 arg, const fmt_type_info* sup2, u64 arg2)
 {
 	static thread_local std::unordered_map<std::string, std::size_t> g_tls_error_stats;
@@ -1763,15 +1773,17 @@ s32 error_code::error_report(const fmt_type_info* sup, u64 arg, const fmt_type_i
 }
 
 template <>
-void stx::manual_fixed_typemap<void>::init_reporter(const char* name, unsigned long long created)
+void stx::manual_fixed_typemap<void>::init_reporter(const char* name, unsigned long long created) const noexcept
 {
-	sys_log.notice("Object '%s' was created [%u]", name, created);
+	sys_log.notice("[ord:%u] Object '%s' was created", created, name);
 }
 
 template <>
-void stx::manual_fixed_typemap<void>::destroy_reporter(const char* name, unsigned long long created)
+void stx::manual_fixed_typemap<void>::destroy_reporter(const char* name, unsigned long long created) const noexcept
 {
-	sys_log.notice("Object '%s' was destroyed [%u]", name, created);
+	sys_log.notice("[ord:%u] Object '%s' is destroying", created, name);
 }
 
 Emulator Emu;
+
+named_thread<progress_dialog_server> g_progress_dlg_server;

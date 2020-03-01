@@ -1506,6 +1506,11 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 
 static LONG exception_handler(PEXCEPTION_POINTERS pExp) noexcept
 {
+	if (pExp->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT && IsDebuggerPresent())
+	{
+		return EXCEPTION_CONTINUE_SEARCH;
+	}
+
 	const u64 addr64 = pExp->ExceptionRecord->ExceptionInformation[1] - reinterpret_cast<u64>(vm::g_base_addr);
 	const u64 exec64 = (pExp->ExceptionRecord->ExceptionInformation[1] - reinterpret_cast<u64>(vm::g_exec_addr)) / 2;
 	const bool is_writing = pExp->ExceptionRecord->ExceptionInformation[0] != 0;
@@ -1525,6 +1530,7 @@ static LONG exception_handler(PEXCEPTION_POINTERS pExp) noexcept
 			return EXCEPTION_CONTINUE_EXECUTION;
 		}
 	}
+
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -1561,6 +1567,9 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 	// TODO: Report full thread name if not an emu thread
 
 	fmt::append(msg, "Thread id = %s.\n", std::this_thread::get_id());
+
+	sys_log.notice("Memory bases:\nvm::g_base_addr = %p\nvm::g_sudo_addr = %p\nvm::g_exec_addr = %p\nvm::g_stat_addr = %p\nvm::g_reservations = %p\n",
+	vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr, vm::g_stat_addr, vm::g_reservations);
 
 	std::vector<HMODULE> modules;
 	for (DWORD size = 256; modules.size() != size; size /= sizeof(HMODULE))
@@ -1617,9 +1626,13 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 
 	// TODO: print registers and the callstack
 
-	// Report fatal error
 	sys_log.fatal("\n%s", msg);
-	report_fatal_error(msg);
+
+	if (!IsDebuggerPresent())
+	{
+		report_fatal_error(msg);
+	}
+
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -1682,7 +1695,10 @@ static void signal_handler(int sig, siginfo_t* info, void* uct) noexcept
 		sys_log.notice("\n%s", cpu->dump());
 	}
 
-	std::string msg = fmt::format("Segfault %s location %p at %p.", cause, info->si_addr, RIP(context));
+	sys_log.notice("Memory bases:\nvm::g_base_addr = %p\nvm::g_sudo_addr = %p\nvm::g_exec_addr = %p\nvm::g_stat_addr = %p\nvm::g_reservations = %p\n",
+	vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr, vm::g_stat_addr, vm::g_reservations);
+
+	std::string msg = fmt::format("Segfault %s location %p at %p.\n", cause, info->si_addr, RIP(context));
 
 	if (thread_ctrl::get_current())
 	{
@@ -1722,8 +1738,6 @@ DECLARE(thread_ctrl::g_native_core_layout) { native_core_arrangement::undefined 
 
 void thread_base::start(native_entry entry)
 {
-	thread_ctrl::g_thread_count++;
-
 #ifdef _WIN32
 	m_thread = ::_beginthreadex(nullptr, 0, entry, this, CREATE_SUSPENDED, nullptr);
 	verify("thread_ctrl::start" HERE), m_thread, ::ResumeThread(reinterpret_cast<HANDLE>(+m_thread)) != -1;
@@ -1742,8 +1756,10 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 
 	g_tls_log_prefix = []
 	{
-		return thread_ctrl::g_tls_this_thread->m_name.get();
+		return thread_ctrl::get_name_cached();
 	};
+
+	std::string name = thread_ctrl::get_name_cached();
 
 #ifdef _MSC_VER
 	struct THREADNAME_INFO
@@ -1755,11 +1771,11 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 	};
 
 	// Set thread name for VS debugger
-	if (IsDebuggerPresent())
+	if (IsDebuggerPresent()) [&]() NEVER_INLINE
 	{
 		THREADNAME_INFO info;
 		info.dwType = 0x1000;
-		info.szName = m_name.get().c_str();
+		info.szName = name.c_str();
 		info.dwThreadID = -1;
 		info.dwFlags = 0;
 
@@ -1770,17 +1786,19 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
 		}
-	}
+	}();
 #endif
 
 #if defined(__APPLE__)
-	pthread_setname_np(m_name.get().substr(0, 15).c_str());
+	name.resize(std::min<std::size_t>(15, name.size()));
+	pthread_setname_np(name.c_str());
 #elif defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
-	pthread_set_name_np(pthread_self(), m_name.get().c_str());
+	pthread_set_name_np(pthread_self(), name.c_str());
 #elif defined(__NetBSD__)
-	pthread_setname_np(pthread_self(), "%s", const_cast<char*>(m_name.get().c_str()));
+	pthread_setname_np(pthread_self(), "%s", name.data());
 #elif !defined(_WIN32)
-	pthread_setname_np(pthread_self(), m_name.get().substr(0, 15).c_str());
+	name.resize(std::min<std::size_t>(15, name.size()));
+	pthread_setname_np(pthread_self(), name.c_str());
 #endif
 
 #ifdef __linux__
@@ -1842,7 +1860,7 @@ bool thread_base::finalize(int) noexcept
 
 	g_tls_log_prefix = []
 	{
-		return thread_ctrl::g_tls_this_thread->m_name.get();
+		return thread_ctrl::get_name_cached();
 	};
 
 	sig_log.notice("Thread time: %fs (%fGc); Faults: %u [rsx:%u, spu:%u]; [soft:%u hard:%u]; Switches:[vol:%u unvol:%u]",
@@ -1854,18 +1872,19 @@ bool thread_base::finalize(int) noexcept
 		fsoft, fhard, ctxvol, ctxinv);
 
 	// Return true if need to delete thread object
-	const bool result = m_state.exchange(thread_state::finished) == thread_state::detached;
+	const bool ok = m_state.exchange(thread_state::finished) <= thread_state::aborting;
 
 	// Signal waiting threads
 	m_state.notify_all();
-	return result;
+
+	// No detached thread supported atm
+	return !ok;
 }
 
 void thread_base::finalize() noexcept
 {
 	g_tls_log_prefix = []() -> std::string { return {}; };
 	thread_ctrl::g_tls_this_thread = nullptr;
-	thread_ctrl::g_thread_count--;
 }
 
 void thread_ctrl::_wait_for(u64 usec, bool alert /* true */)
@@ -1934,8 +1953,27 @@ void thread_ctrl::_wait_for(u64 usec, bool alert /* true */)
 	}
 }
 
+std::string thread_ctrl::get_name_cached()
+{
+	auto _this = thread_ctrl::g_tls_this_thread;
+
+	if (!_this)
+	{
+		return {};
+	}
+
+	static thread_local stx::shared_cptr<std::string> name_cache;
+
+	if (!_this->m_tname.is_equal(name_cache)) [[unlikely]]
+	{
+		name_cache = _this->m_tname.load();
+	}
+
+	return *name_cache;
+}
+
 thread_base::thread_base(std::string_view name)
-	: m_name(name)
+	: m_tname(stx::shared_cptr<std::string>::make(name))
 {
 }
 

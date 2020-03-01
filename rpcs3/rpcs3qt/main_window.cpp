@@ -256,12 +256,15 @@ void main_window::show_boot_error(game_boot_result status)
 	case game_boot_result::file_creation_error:
 		message = tr("The emulator could not create files required for booting.");
 		break;
+	case game_boot_result::firmware_missing:
+		message = tr("Firmware has not been installed. Install firmware with the \"File > Install Firmware\" menu option.");
+		break;
 	case game_boot_result::generic_error:
 	default:
 		message = tr("Unknown error.");
 		break;
 	}
-	const QString link = tr("<br /><br />For information on how to dump your PS3 games, read the <a href=\"https://rpcs3.net/quickstart\">quickstart guide</a>.");
+	const QString link = tr("<br /><br />For information on setting up the emulator and dumping your PS3 games, read the <a href=\"https://rpcs3.net/quickstart\">quickstart guide</a>.");
 
 	QMessageBox msg;
 	msg.setWindowTitle(tr("Boot Failed"));
@@ -340,7 +343,7 @@ void main_window::BootElf()
 	// game folder in case of having e.g. a Game Folder with collected links to elf files.
 	// Don't set last path earlier in case of cancelled dialog
 	guiSettings->SetValue(gui::fd_boot_elf, filePath);
-	const std::string path = sstr(QFileInfo(filePath).canonicalFilePath());
+	const std::string path = sstr(QFileInfo(filePath).absoluteFilePath());
 
 	gui_log.notice("Booting from BootElf...");
 	Boot(path, "", true);
@@ -357,7 +360,7 @@ void main_window::BootGame()
 	}
 
 	QString path_last_Game = guiSettings->GetValue(gui::fd_boot_game).toString();
-	QString dirPath = QFileDialog::getExistingDirectory(this, tr("Select Game Folder"), path_last_Game, QFileDialog::ShowDirsOnly);
+	QString dirPath = QFileDialog::getExistingDirectory(this, tr("Select Game Folder"), path_last_Game, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
 
 	if (dirPath == NULL)
 	{
@@ -1287,7 +1290,7 @@ void main_window::CreateConnects()
 		QStringList paths;
 
 		// Only select one folder for now
-		paths << QFileDialog::getExistingDirectory(this, tr("Select a folder containing one or more games"), qstr(fs::get_config_dir()), QFileDialog::ShowDirsOnly);
+		paths << QFileDialog::getExistingDirectory(this, tr("Select a folder containing one or more games"), qstr(fs::get_config_dir()), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
 
 		if (!paths.isEmpty())
 		{
