@@ -980,6 +980,8 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 
 				atomic_t<std::size_t> fnext = 0;
 
+				shared_mutex sprx_mtx;
+
 				named_thread_group workers("SPRX Worker ", GetMaxThreads(), [&]
 				{
 					for (std::size_t func_i = fnext++; func_i < file_queue.size(); func_i = fnext++)
@@ -1001,9 +1003,13 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 
 						if (obj == elf_error::ok)
 						{
+							std::unique_lock lock(sprx_mtx);
+
 							if (auto prx = ppu_load_prx(obj, path))
 							{
+								lock.unlock();
 								ppu_initialize(*prx);
+								lock.lock();
 								ppu_unload_prx(*prx);
 								g_progr_fdone++;
 								continue;
@@ -1034,7 +1040,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 		const std::string hdd0_disc = vfs::get("/dev_hdd0/disc/");
 		const std::size_t game_dir_size = 8; // size of PS3_GAME and PS3_GMXX
 		const std::size_t bdvd_pos = m_cat == "DG" && bdvd_dir.empty() && disc.empty() ? elf_dir.rfind("/USRDIR") - game_dir_size : 0;
-		const bool from_hdd0_game = m_path.find(hdd0_game) != std::string::npos;
+		const bool from_hdd0_game = m_path.find(hdd0_game) != umax;
 
 		if (bdvd_pos && from_hdd0_game)
 		{

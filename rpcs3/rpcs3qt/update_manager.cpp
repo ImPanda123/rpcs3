@@ -305,6 +305,12 @@ bool update_manager::handle_rpcs3(const QByteArray& rpcs3_data, bool /*automatic
 
 	std::string replace_path;
 
+#ifdef _WIN32
+	// Get executable path
+	wchar_t orig_path[32767];
+	GetModuleFileNameW(nullptr, orig_path, sizeof(orig_path) / 2);
+#endif
+
 #ifdef __linux__
 
 	const char* appimage_path = ::getenv("APPIMAGE");
@@ -502,7 +508,7 @@ bool update_manager::handle_rpcs3(const QByteArray& rpcs3_data, bool /*automatic
 				break;
 		}
 
-		if (size_t pos = name.find_last_of('/'); pos != std::string::npos)
+		if (size_t pos = name.find_last_of('/'); pos != umax)
 		{
 			update_log.trace("Creating path: %s", name.substr(0, pos));
 			fs::create_path(name.substr(0, pos));
@@ -521,7 +527,7 @@ bool update_manager::handle_rpcs3(const QByteArray& rpcs3_data, bool /*automatic
 			// File failed to open, probably because in use, rename existing file and try again
 			const auto pos = name.find_last_of('/');
 			std::string filename;
-			if (pos == std::string::npos)
+			if (pos == umax)
 				filename = name;
 			else
 				filename = name.substr(pos + 1);
@@ -558,20 +564,13 @@ bool update_manager::handle_rpcs3(const QByteArray& rpcs3_data, bool /*automatic
 	error_free7z();
 	if (res)
 		return false;
-
-	replace_path = Emulator::GetEmuDir() + "rpcs3.exe";
-
-	// Creating a file to indicate we're restarting
-	const std::string s_filelock = fs::get_cache_dir() + ".restart_lock";
-	verify("Restart lock" HERE), !!fs::file(s_filelock, fs::create);
-
 #endif
 
 	m_progress_dialog->close();
 	QMessageBox::information(m_parent, tr("Auto-updater"), tr("Update successful!"));
 
 #ifdef _WIN32
-	int ret = _execl(replace_path.c_str(), replace_path.c_str(), nullptr);
+	int ret = _wexecl(orig_path, orig_path, nullptr);
 #else
 	int ret = execl(replace_path.c_str(), replace_path.c_str(), nullptr);
 #endif

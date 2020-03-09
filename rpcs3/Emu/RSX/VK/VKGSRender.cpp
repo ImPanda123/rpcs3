@@ -104,18 +104,21 @@ namespace vk
 
 		case rsx::surface_color_format::b8:
 		{
-			VkComponentMapping no_alpha = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE };
+			const VkComponentMapping no_alpha = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE };
 			return std::make_pair(VK_FORMAT_R8_UNORM, no_alpha);
 		}
 
 		case rsx::surface_color_format::g8b8:
 		{
-			VkComponentMapping gb_rg = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G };
+			const VkComponentMapping gb_rg = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G };
 			return std::make_pair(VK_FORMAT_R8G8_UNORM, gb_rg);
 		}
 
 		case rsx::surface_color_format::x32:
-			return std::make_pair(VK_FORMAT_R32_SFLOAT, vk::default_component_map());
+		{
+			const VkComponentMapping rrrr = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R };
+			return std::make_pair(VK_FORMAT_R32_SFLOAT, rrrr);
+		}
 
 		default:
 			rsx_log.error("Surface color buffer: Unsupported surface color format (0x%x)", static_cast<u32>(color_format));
@@ -2620,9 +2623,10 @@ void VKGSRender::update_vertex_env(u32 id, const vk::vertex_upload_info& vertex_
 {
 	// Actual allocation must have been done previously
 	u32 base_offset;
+	const u32 offset32 = static_cast<u32>(m_vertex_layout_stream_info.offset);
+	const u32 range32 = static_cast<u32>(m_vertex_layout_stream_info.range);
 
-	if (!m_vertex_layout_storage ||
-		!m_vertex_layout_storage->in_range(m_vertex_layout_stream_info.offset, m_vertex_layout_stream_info.range, base_offset))
+	if (!m_vertex_layout_storage || !m_vertex_layout_storage->in_range(offset32, range32, base_offset))
 	{
 		verify("Incompatible driver (MacOS?)" HERE), m_texbuffer_view_size >= m_vertex_layout_stream_info.range;
 

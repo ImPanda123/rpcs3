@@ -14,7 +14,7 @@
 
 #include "Emu/system_config.h"
 #include "Utilities/geometry.h"
-#include "Utilities/Log.h"
+#include "util/logs.hpp"
 
 #define GL_FRAGMENT_TEXTURES_START 0
 #define GL_VERTEX_TEXTURES_START   (GL_FRAGMENT_TEXTURES_START + 16)
@@ -234,7 +234,7 @@ namespace gl
 				vendor_string = "intel"; //lowest acceptable value
 			}
 
-			if (vendor_string.find("intel") != std::string::npos)
+			if (vendor_string.find("intel") != umax)
 			{
 				int version_major = 0;
 				int version_minor = 0;
@@ -258,16 +258,16 @@ namespace gl
 				if (!EXT_dsa_supported && glGetTextureImageEXT && glTextureBufferRangeEXT)
 					EXT_dsa_supported = true;
 			}
-			else if (vendor_string.find("nvidia") != std::string::npos)
+			else if (vendor_string.find("nvidia") != umax)
 			{
 				vendor_NVIDIA = true;
 			}
-			else if (vendor_string.find("x.org") != std::string::npos)
+			else if (vendor_string.find("x.org") != umax)
 			{
 				vendor_MESA = true;
 			}
 #ifdef _WIN32
-			else if (vendor_string.find("amd") != std::string::npos || vendor_string.find("ati") != std::string::npos)
+			else if (vendor_string.find("amd") != umax || vendor_string.find("ati") != umax)
 			{
 				vendor_AMD = true;
 			}

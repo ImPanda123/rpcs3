@@ -2,7 +2,7 @@
 #include "JIT.h"
 #include "StrFmt.h"
 #include "File.h"
-#include "Log.h"
+#include "util/logs.hpp"
 #include "mutex.h"
 #include "sysinfo.h"
 #include "VirtualMemory.h"
@@ -923,7 +923,7 @@ public:
 		name.append(".gz");
 
 		z_stream zs{};
-		uLong zsz = compressBound(obj.getBufferSize()) + 256;
+		uLong zsz = compressBound(::narrow<u32>(obj.getBufferSize(), HERE)) + 256;
 		auto zbuf = std::make_unique<uchar[]>(zsz);
 #ifndef _MSC_VER
 #pragma GCC diagnostic push
