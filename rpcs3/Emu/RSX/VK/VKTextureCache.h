@@ -5,6 +5,7 @@
 #include "VKCompute.h"
 #include "VKResourceManager.h"
 #include "VKDMA.h"
+#include "VKRenderPass.h"
 #include "../Common/TextureUtils.h"
 #include "Utilities/mutex.h"
 #include "../Common/texture_cache.h"
@@ -98,7 +99,7 @@ namespace vk
 
 		void destroy()
 		{
-			if (!exists())
+			if (!exists() && context != rsx::texture_upload_context::dma)
 				return;
 
 			m_tex_cache->on_section_destroyed(*this);
@@ -174,6 +175,11 @@ namespace vk
 				// If a hard flush occurred while this surface was flush_always the cache would have reset its protection afterwards.
 				// DMA resource would still be present but already used to flush previously.
 				vk::get_resource_manager()->dispose(dma_fence);
+			}
+
+			if (vk::is_renderpass_open(cmd))
+			{
+				vk::end_renderpass(cmd);
 			}
 
 			src->push_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -485,8 +491,7 @@ namespace vk
 		{
 			if (tex.is_managed())
 			{
-				m_temporary_memory_size += tex.get_section_size();
-				m_temporary_storage.emplace_back(tex);
+				vk::get_resource_manager()->dispose(tex.get_texture());
 			}
 		}
 
