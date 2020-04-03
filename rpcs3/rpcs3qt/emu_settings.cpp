@@ -12,6 +12,8 @@
 #include <QMessageBox>
 #include <QLineEdit>
 
+#include "Emu/System.h"
+#include "Emu/system_config.h"
 #if defined(_WIN32) || defined(HAVE_VULKAN)
 #include "Emu/RSX/VK/VKHelpers.h"
 #endif
@@ -319,7 +321,7 @@ void emu_settings::SaveSettings()
 	if (config_name == g_cfg.name || m_title_id == Emu.GetTitleID())
 	{
 		// Update current config
-		g_cfg.from_string(config.to_string(), true);
+		g_cfg.from_string(config.to_string(), !Emu.IsStopped());
 
 		if (!Emu.IsStopped()) // Don't spam the log while emulation is stopped. The config will be logged on boot anyway.
 		{
