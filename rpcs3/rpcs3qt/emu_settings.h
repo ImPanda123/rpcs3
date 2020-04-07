@@ -4,6 +4,7 @@
 
 #include "stdafx.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QStringList>
 #include <QMap>
@@ -188,21 +189,21 @@ public:
 	{
 		bool supportsVulkan = false;
 		QStringList vulkanAdapters;
-		QString name_Null = tr("Disable Video Output");
-		QString name_Vulkan = tr("Vulkan");
-		QString name_OpenGL = tr("OpenGL");
+		QString name_Null;
+		QString name_Vulkan;
+		QString name_OpenGL;
 		Render_Info Vulkan;
 		Render_Info OpenGL;
 		Render_Info NullRender;
 		std::vector<Render_Info*> renderers;
 
-		Render_Creator();
+		Render_Creator(const QString& name_null, const QString& name_vulkan, const QString& name_openGL);
 	};
 
 	struct Microphone_Creator
 	{
 		QStringList microphones_list;
-		QString mic_none = tr("None");
+		QString mic_none;
 		std::array<std::string, 4> sel_list;
 		std::string SetDevice(u32 num, QString& text);
 		void ParseDevices(std::string list);
@@ -236,6 +237,9 @@ public:
 	/** Connects a line edit with the target settings type*/
 	void EnhanceEdit(QLineEdit* edit, SettingsType type);
 
+	/** Connects a button group with the target settings type*/
+	void EnhanceRadioButton(QButtonGroup* button_group, SettingsType type);
+
 	std::vector<std::string> GetLoadedLibraries();
 	void SaveSelectedLibraries(const std::vector<std::string>& libs);
 
@@ -266,12 +270,15 @@ public:
 	/** Fixes all registered invalid settings after asking the user for permission.*/
 	void OpenCorrectionDialog(QWidget* parent = Q_NULLPTR);
 
+	/** Get a localized and therefore freely adjustable version of the string used in config.yml.*/
+	QString GetLocalizedSetting(const QString& original, SettingsType type, int index) const;
+
 public Q_SLOTS:
 	/** Writes the unsaved settings to file.  Used in settings dialog on accept.*/
 	void SaveSettings();
 private:
 	/** A helper map that keeps track of where a given setting type is located*/
-	const QMap<SettingsType, cfg_location> SettingsLoc =
+	const QMap<SettingsType, cfg_location> m_settings_location =
 	{
 		// Core Tab
 		{ PPUDecoder,               { "Core", "PPU Decoder"}},
