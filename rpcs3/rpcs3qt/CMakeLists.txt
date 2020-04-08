@@ -30,6 +30,7 @@
 	main_window.cpp
 	memory_string_searcher.cpp
 	memory_viewer_panel.cpp
+	microphone_creator.cpp
 	msg_dialog_frame.cpp
 	osk_dialog_frame.cpp
 	pad_led_settings_dialog.cpp
@@ -39,6 +40,7 @@
 	progress_dialog.cpp
 	qt_utils.cpp
 	register_editor_dialog.cpp
+	render_creator.cpp
 	rsx_debugger.cpp
 	save_data_dialog.cpp
 	save_data_info_dialog.cpp
