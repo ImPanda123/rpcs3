@@ -236,7 +236,7 @@ Type* PPUTranslator::ScaleType(Type* type, s32 pow2)
 
 	uint scaled = type->getScalarSizeInBits();
 
-	verify(HERE), utils::popcnt32(scaled) == 1;
+	verify(HERE), std::popcount(scaled) == 1;
 
 	if (pow2 > 0)
 	{
@@ -904,18 +904,28 @@ void PPUTranslator::VLOGEFP(ppu_opcode_t op)
 
 void PPUTranslator::VMADDFP(ppu_opcode_t op)
 {
+	auto [a, b, c] = get_vrs<f32[4]>(op.va, op.vb, op.vc);
+
+	// Optimization: Emit only a floating multiply if the addend is zero
+	if (auto cv = llvm::dyn_cast<llvm::Constant>(b.value))
+	{
+		v128 data = get_const_vector(cv, m_addr, 2000);
+
+		if (data == v128{})
+		{
+			set_vr(op.vd, a * c);
+			ppu_log.notice("LLVM: VMADDFP with 0 addend at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
+			return;
+		}
+	}
+
 	if (m_use_fma)
 	{
-		const auto acb = GetVrs(VrType::vf, op.va, op.vc, op.vb);
-		SetVr(op.vd, m_ir->CreateCall(get_intrinsic<f32[4]>(llvm::Intrinsic::fma), { acb[0], acb[1], acb[2] }));
+		SetVr(op.vd, m_ir->CreateCall(get_intrinsic<f32[4]>(llvm::Intrinsic::fma), { a.value, c.value, b.value }));
 		return;
 	}
 
 	// Emulated FMA via double precision
-	auto a = get_vr<f32[4]>(op.va);
-	auto b = get_vr<f32[4]>(op.vb);
-	auto c = get_vr<f32[4]>(op.vc);
-
 	const auto xa = m_ir->CreateFPExt(a.value, get_type<f64[4]>());
 	const auto xb = m_ir->CreateFPExt(b.value, get_type<f64[4]>());
 	const auto xc = m_ir->CreateFPExt(c.value, get_type<f64[4]>());
@@ -1200,19 +1210,29 @@ void PPUTranslator::VMULOUH(ppu_opcode_t op)
 
 void PPUTranslator::VNMSUBFP(ppu_opcode_t op)
 {
+	auto [a, b, c] = get_vrs<f32[4]>(op.va, op.vb, op.vc);
+
+	// Optimization: Emit only a floating multiply if the addend is zero
+	if (auto cv = llvm::dyn_cast<llvm::Constant>(b.value))
+	{
+		v128 data = get_const_vector(cv, m_addr, 2004);
+
+		if (data == v128{})
+		{
+			set_vr(op.vd, -a * c);
+			ppu_log.notice("LLVM: VNMSUBFP with 0 addend at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
+			return;
+		}
+	}
+
 	// Differs from the emulated path with regards to negative zero
 	if (m_use_fma)
 	{
-		const auto acb = GetVrs(VrType::vf, op.va, op.vc, op.vb);
-		SetVr(op.vd, m_ir->CreateFNeg(m_ir->CreateCall(get_intrinsic<f32[4]>(llvm::Intrinsic::fma), { acb[0], acb[1], m_ir->CreateFNeg(acb[2]) })));
+		SetVr(op.vd, m_ir->CreateFNeg(m_ir->CreateCall(get_intrinsic<f32[4]>(llvm::Intrinsic::fma), { a.value, c.value, m_ir->CreateFNeg(b.value) })));
 		return;
 	}
 
 	// Emulated FMA via double precision
-	auto a = get_vr<f32[4]>(op.va);
-	auto b = get_vr<f32[4]>(op.vb);
-	auto c = get_vr<f32[4]>(op.vc);
-
 	const auto xa = m_ir->CreateFPExt(a.value, get_type<f64[4]>());
 	const auto xb = m_ir->CreateFPExt(b.value, get_type<f64[4]>());
 	const auto xc = m_ir->CreateFPExt(c.value, get_type<f64[4]>());
@@ -3881,7 +3901,7 @@ void PPUTranslator::FMADDS(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), {a, c, b});
 	}
@@ -3909,7 +3929,7 @@ void PPUTranslator::FMSUBS(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), {a, c, m_ir->CreateFNeg(b)});
 	}
@@ -3937,7 +3957,7 @@ void PPUTranslator::FNMSUBS(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), {a, c, m_ir->CreateFNeg(b)});
 	}
@@ -3965,7 +3985,7 @@ void PPUTranslator::FNMADDS(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), {a, c, b});
 	}
@@ -4225,7 +4245,7 @@ void PPUTranslator::FMSUB(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), {a, c, m_ir->CreateFNeg(b)});
 	}
@@ -4253,7 +4273,7 @@ void PPUTranslator::FMADD(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), { a, c, b });
 	}
@@ -4281,7 +4301,7 @@ void PPUTranslator::FNMSUB(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), {a, c, m_ir->CreateFNeg(b)});
 	}
@@ -4309,7 +4329,7 @@ void PPUTranslator::FNMADD(ppu_opcode_t op)
 	const auto c = GetFpr(op.frc);
 
 	llvm::Value* result;
-	if (g_cfg.core.ppu_accurate_fma)
+	if (g_cfg.core.llvm_accurate_dfma)
 	{
 		result = m_ir->CreateCall(get_intrinsic<f64>(llvm::Intrinsic::fma), {a, c, b});
 	}

@@ -10,7 +10,6 @@
 #include "Utilities/Thread.h"
 #include "Utilities/VirtualMemory.h"
 #include "Utilities/address_range.h"
-#include "Utilities/asm.h"
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/Cell/lv2/sys_memory.h"
 #include "Emu/RSX/GSRender.h"
@@ -697,7 +696,7 @@ namespace vm
 		const u32 size = ::align(orig_size, min_page_size) + (flags & 0x10 ? 0x2000 : 0);
 
 		// Check alignment (it's page allocation, so passing small values there is just silly)
-		if (align < min_page_size || align != (0x80000000u >> utils::cntlz32(align, true)))
+		if (align < min_page_size || align != (0x80000000u >> std::countl_zero(align)))
 		{
 			fmt::throw_exception("Invalid alignment (size=0x%x, align=0x%x)" HERE, size, align);
 		}
@@ -992,7 +991,7 @@ namespace vm
 		const u32 size = ::align(orig_size, 0x10000);
 
 		// Check alignment
-		if (align < 0x10000 || align != (0x80000000u >> utils::cntlz32(align, true)))
+		if (align < 0x10000 || align != (0x80000000u >> std::countl_zero(align)))
 		{
 			fmt::throw_exception("Invalid alignment (size=0x%x, align=0x%x)" HERE, size, align);
 		}
@@ -1105,7 +1104,7 @@ namespace vm
 			if (is_write)
 				std::swap(src, dst);
 
-			if (size <= 16 && utils::popcnt32(size) == 1 && (addr & (size - 1)) == 0)
+			if (size <= 16 && std::popcount(size) == 1 && (addr & (size - 1)) == 0)
 			{
 				if (is_write)
 				{

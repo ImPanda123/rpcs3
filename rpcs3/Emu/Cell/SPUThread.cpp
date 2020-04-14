@@ -1,5 +1,6 @@
 ﻿#include "stdafx.h"
 #include "Utilities/JIT.h"
+#include "Utilities/asm.h"
 #include "Utilities/sysinfo.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Memory/vm_reservation.h"
@@ -999,6 +1000,8 @@ std::string spu_thread::dump_regs() const
 
 	fmt::append(ret, "\nEvent Stat: 0x%x\n", +ch_event_stat);
 	fmt::append(ret, "Event Mask: 0x%x\n", +ch_event_mask);
+	fmt::append(ret, "Stall Mask: 0x%x\n", ch_stall_mask);
+	fmt::append(ret, "Tag Stat: %s\n", ch_tag_stat);
 
 	if (const u32 addr = raddr)
 		fmt::append(ret, "Reservation Addr: 0x%x\n", addr);
@@ -1045,10 +1048,31 @@ std::string spu_thread::dump_misc() const
 		// Print chunk address from lowest 16 bits
 		fmt::append(ret, "...chunk-0x%05x", (name & 0xffff) * 4);
 	}
+
 	fmt::append(ret, "\n[%s]", ch_mfc_cmd);
 	fmt::append(ret, "\nLocal Storage: 0x%08x..0x%08x", offset, offset + 0x3ffff);
+
+	if (const u64 _time = start_time)
+	{
+		if (const auto func = current_func)
+		{
+			ret += "\nCurrent function: ";
+			ret += func;
+		}
+		else
+		{
+			ret += '\n';
+		}
+
+
+		fmt::append(ret, "\nWaiting: %fs", (get_system_time() - _time) / 1000000.);
+	}
+	else
+	{
+		ret += "\n\n";
+	}
+
 	fmt::append(ret, "\nTag Mask: 0x%08x", ch_tag_mask);
-	fmt::append(ret, "\nMFC Stall: 0x%08x", ch_stall_mask);
 	fmt::append(ret, "\nMFC Queue Size: %u", mfc_size);
 
 	for (u32 i = 0; i < 16; i++)
@@ -1610,10 +1634,10 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 			// Reset to elements array head
 			index = 0;
 
-			const auto src = _ptr<const __m128i>(args.eal & 0x3fff8);
-			const v128 data0 = v128::fromV(_mm_loadu_si128(src + 0));
-			const v128 data1 = v128::fromV(_mm_loadu_si128(src + 1));
-			const v128 data2 = v128::fromV(_mm_loadu_si128(src + 2));
+			const auto src = _ptr<const void>(args.eal & 0x3fff8);
+			const v128 data0 = v128::loadu(src, 0);
+			const v128 data1 = v128::loadu(src, 1);
+			const v128 data2 = v128::loadu(src, 2);
 
 			reinterpret_cast<v128*>(bufitems)[0] = data0;
 			reinterpret_cast<v128*>(bufitems)[1] = data1;
@@ -2130,7 +2154,7 @@ bool spu_thread::process_mfc_cmd()
 			break;
 		}
 
-		// Fallthrough
+		[[fallthrough]];
 	}
 	case MFC_PUT_CMD:
 	case MFC_PUTB_CMD:
@@ -2481,6 +2505,8 @@ s64 spu_thread::get_ch_value(u32 ch)
 		{
 			return res;
 		}
+
+		spu_function_logger logger(*this, "MFC Events read");
 
 		const u32 mask1 = ch_event_mask;
 
@@ -2968,6 +2994,8 @@ bool spu_thread::stop_and_signal(u32 code)
 
 		state += cpu_flag::wait;
 
+		spu_function_logger logger(*this, "sys_spu_thread_receive_event");
+
 		while (true)
 		{
 			queue.reset();
@@ -3265,6 +3293,13 @@ void spu_thread::fast_call(u32 ls_addr)
 	gpr[1]._u32[3] = old_stack;
 }
 
+spu_function_logger::spu_function_logger(spu_thread& spu, const char* func)
+	: spu(spu)
+{
+	spu.current_func = func;
+	spu.start_time = get_system_time();
+}
+
 template <>
 void fmt_class_string<spu_channel>::format(std::string& out, u64 arg)
 {
@@ -3278,7 +3313,7 @@ void fmt_class_string<spu_channel>::format(std::string& out, u64 arg)
 	}
 	else
 	{
-		out += "empty"; 
+		out += "empty";
 	}
 }
 

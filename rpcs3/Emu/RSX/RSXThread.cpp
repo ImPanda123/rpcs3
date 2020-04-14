@@ -703,6 +703,7 @@ namespace rsx
 			{
 			default:
 				rsx_log.error("bad clip plane control (0x%x)", static_cast<u8>(clip_plane_control[index]));
+				[[fallthrough]];
 
 			case rsx::user_clip_plane_op::disable:
 				clip_enabled_flags[index] = 0;
@@ -1771,7 +1772,7 @@ namespace rsx
 	{
 		for (GcmTileInfo &tile : tiles)
 		{
-			if (!tile.binded || (tile.location & 1) != (location & 1))
+			if (!tile.bound || (tile.location & 1) != (location & 1))
 			{
 				continue;
 			}
@@ -2136,7 +2137,7 @@ namespace rsx
 				//Find zeta address in bound zculls
 				for (const auto& zcull : zculls)
 				{
-					if (zcull.binded)
+					if (zcull.bound)
 					{
 						const u32 rsx_address = rsx::get_address(zcull.offset, CELL_GCM_LOCATION_LOCAL, HERE);
 						if (rsx_address == zeta_address)
@@ -2260,6 +2261,11 @@ namespace rsx
 	void thread::sync_hint(FIFO_hint /*hint*/, void* args)
 	{
 		zcull_ctrl->on_sync_hint(args);
+	}
+
+	bool thread::is_fifo_idle() const
+	{
+		return ctrl->get == (ctrl->put & ~3);
 	}
 
 	void thread::flush_fifo()
@@ -2408,7 +2414,7 @@ namespace rsx
 
 				for (u32 ea = address >> 20, end = ea + (size >> 20); ea < end; ea++)
 				{
-					const u32 io = utils::ror32(iomap_table.io[ea], 20);
+					const u32 io = std::rotr<u32>(iomap_table.io[ea], 20);
 
 					if (io + 1)
 					{

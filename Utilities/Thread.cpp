@@ -1450,8 +1450,16 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 				pf_events->events.emplace(static_cast<u32>(data2), addr);
 			}
 
-			sig_log.error("Page_fault %s location 0x%x because of %s memory", is_writing ? "writing" : "reading",
+			sig_log.warning("Page_fault %s location 0x%x because of %s memory", is_writing ? "writing" : "reading",
 				addr, data3 == SYS_MEMORY_PAGE_FAULT_CAUSE_READ_ONLY ? "writing read-only" : "using unmapped");
+
+			if (cpu->id_type() == 1)
+			{
+				if (const auto func = static_cast<ppu_thread*>(cpu)->current_function)
+				{
+					sig_log.warning("Page_fault while in function %s", func);
+				}
+			}
 
 			error_code sending_error = sys_event_port_send(pf_port_id, data1, data2, data3);
 
@@ -2398,7 +2406,7 @@ void thread_ctrl::set_thread_affinity_mask(u64 mask)
 	SetThreadAffinityMask(_this_thread, mask);
 #elif __APPLE__
 	// Supports only one core
-	thread_affinity_policy_data_t policy = { static_cast<integer_t>(utils::cnttz64(mask)) };
+	thread_affinity_policy_data_t policy = { static_cast<integer_t>(std::countr_zero(mask)) };
 	thread_port_t mach_thread = pthread_mach_thread_np(pthread_self());
 	thread_policy_set(mach_thread, THREAD_AFFINITY_POLICY, reinterpret_cast<thread_policy_t>(&policy), 1);
 #elif defined(__linux__) || defined(__DragonFly__) || defined(__FreeBSD__)
