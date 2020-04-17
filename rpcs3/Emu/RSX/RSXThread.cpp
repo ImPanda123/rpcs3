@@ -2265,7 +2265,7 @@ namespace rsx
 
 	bool thread::is_fifo_idle() const
 	{
-		return ctrl->get == (ctrl->put & ~3);
+		return ctrl == nullptr || ctrl->get == (ctrl->put & ~3);
 	}
 
 	void thread::flush_fifo()
@@ -2617,8 +2617,8 @@ namespace rsx
 			{
 				m_skip_frame_ctr++;
 
-				if (m_skip_frame_ctr == g_cfg.video.consequtive_frames_to_draw)
-					m_skip_frame_ctr = -g_cfg.video.consequtive_frames_to_skip;
+				if (m_skip_frame_ctr >= g_cfg.video.consecutive_frames_to_draw)
+					m_skip_frame_ctr = -g_cfg.video.consecutive_frames_to_skip;
 
 				skip_current_frame = (m_skip_frame_ctr < 0);
 			}
