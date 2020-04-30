@@ -77,7 +77,7 @@ void fmt_class_string<ppu_join_status>::format(std::string& out, u64 arg)
 	{
 		switch (js)
 		{
-		case ppu_join_status::joinable: return "";
+		case ppu_join_status::joinable: return "none";
 		case ppu_join_status::detached: return "detached";
 		case ppu_join_status::zombie: return "zombie";
 		case ppu_join_status::exited: return "exited";
@@ -381,20 +381,47 @@ std::string ppu_thread::dump_regs() const
 		const u32 max_str_len = 32;
 		const u32 hex_count = 8;
 
-		if (reg <= UINT32_MAX && vm::check_addr(static_cast<u32>(reg), max_str_len, vm::page_readable))
+		if (reg <= UINT32_MAX && vm::check_addr(static_cast<u32>(reg), max_str_len))
 		{
-			const u64 reg_ptr = vm::read64(reg);
+			bool is_function = false;
+			u32 toc = 0;
 
-			if (reg_ptr <= UINT32_MAX && vm::check_addr(static_cast<u32>(reg_ptr), max_str_len, vm::page_readable))
+			if (const u32 reg_ptr = *vm::get_super_ptr<u32>(static_cast<u32>(reg));
+				vm::check_addr(reg_ptr, max_str_len))
 			{
+				if ((reg | reg_ptr) % 4 == 0 && vm::check_addr(reg_ptr, 4, vm::page_executable))
+				{
+					toc = *vm::get_super_ptr<u32>(static_cast<u32>(reg + 4));
+
+					if (toc % 4 == 0 && vm::check_addr(toc))
+					{
+						is_function = true;
+					}
+				}
+
 				reg = reg_ptr;
+			}
+			else if (reg % 4 == 0 && vm::check_addr(reg, 4, vm::page_executable))
+			{
+				is_function = true;
 			}
 
 			const auto gpr_buf = vm::get_super_ptr<u8>(reg);
 
 			std::string buf_tmp(gpr_buf, gpr_buf + max_str_len);
 
-			if (std::isprint(static_cast<u8>(buf_tmp[0])) && std::isprint(static_cast<u8>(buf_tmp[1])) && std::isprint(static_cast<u8>(buf_tmp[2])))
+			if (is_function)
+			{
+				if (toc)
+				{
+					fmt::append(ret, " -> func(at=0x%x, toc=0x%x)", reg, toc);
+				}
+				else
+				{
+					fmt::append(ret, " -> function-code");
+				}
+			}
+			else if (std::isprint(static_cast<u8>(buf_tmp[0])) && std::isprint(static_cast<u8>(buf_tmp[1])) && std::isprint(static_cast<u8>(buf_tmp[2])))
 			{
 				fmt::append(ret, " -> \"%s\"", buf_tmp.c_str());
 			}
@@ -504,7 +531,7 @@ std::string ppu_thread::dump_misc() const
 
 	if (_func)
 	{
-		ret += "Current function: ";
+		ret += "In function: ";
 		ret += _func;
 		ret += '\n';
 
@@ -761,14 +788,11 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 
 	gpr[13] = param.tls_addr;
 
-	if (detached >= 0 && id != id_base)
+	if (detached >= 0)
 	{
-		// Initialize thread entry point
-		cmd_list
-		({
-		    {ppu_cmd::set_args, 2}, param.arg0, param.arg1,
-		    {ppu_cmd::opd_call, 0}, std::bit_cast<u64>(entry_func),
-		});
+		// Initialize thread args
+		gpr[3] = param.arg0;
+		gpr[4] = param.arg1;
 	}
 
 	// Trigger the scheduler
@@ -1006,9 +1030,19 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 
 	ppu.raddr = addr;
 
-	u64 count = 0;
-
-	while (g_use_rtm) [[likely]]
+	for (u64 count = 0; g_use_rtm; [&]()
+	{
+		if (++count < 20) [[likely]]
+		{
+			busy_wait(300);
+		}
+		else
+		{
+			ppu.state += cpu_flag::wait;
+			std::this_thread::yield();
+			ppu.check_state();
+		}
+	}())
 	{
 		ppu.rtime = vm::reservation_acquire(addr, sizeof(T)) & -128;
 		ppu.rdata = data;
@@ -1021,11 +1055,6 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 			}
 
 			return static_cast<T>(ppu.rdata << data_off >> size_off);
-		}
-		else
-		{
-			_mm_pause();
-			count++;
 		}
 	}
 
