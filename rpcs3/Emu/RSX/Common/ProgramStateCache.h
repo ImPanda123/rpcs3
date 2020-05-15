@@ -50,6 +50,10 @@ namespace program_hash_util
 			u32 program_ucode_length;
 			u32 program_constants_buffer_length;
 			u16 referenced_textures_mask;
+
+			bool has_pack_instructions;
+			bool has_branch_instructions;
+			bool is_nop_shader;           // Does this affect Z-pass testing???
 		};
 
 		/**

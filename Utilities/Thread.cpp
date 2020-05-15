@@ -1657,10 +1657,10 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 		//const auto uw = (u8*)(unwind_base + rtf->UnwindData);
 	}
 
-	for (HMODULE module : modules)
+	for (HMODULE _module : modules)
 	{
 		MODULEINFO info;
-		if (GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info)))
+		if (GetModuleInformation(GetCurrentProcess(), _module, &info, sizeof(info)))
 		{
 			const DWORD64 base = reinterpret_cast<DWORD64>(info.lpBaseOfDll);
 
@@ -1670,7 +1670,7 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 				for (DWORD size = 15; module_name.size() != size;)
 				{
 					module_name.resize(size);
-					size = GetModuleBaseNameA(GetCurrentProcess(), module, &module_name.front(), size + 1);
+					size = GetModuleBaseNameA(GetCurrentProcess(), _module, &module_name.front(), size + 1);
 					if (!size)
 					{
 						module_name.clear();
@@ -2154,7 +2154,7 @@ void thread_ctrl::detect_cpu_layout()
 	if (!g_native_core_layout.compare_and_swap_test(native_core_arrangement::undefined, native_core_arrangement::generic))
 		return;
 
-	const auto system_id = utils::get_system_info();
+	const auto system_id = utils::get_cpu_brand();
 	if (system_id.find("Ryzen") != umax)
 	{
 		g_native_core_layout.store(native_core_arrangement::amd_ccx);
@@ -2226,7 +2226,7 @@ u64 thread_ctrl::get_affinity_mask(thread_class group)
 		case native_core_arrangement::amd_ccx:
 		{
 			u64 spu_mask, ppu_mask, rsx_mask;
-			const auto system_id = utils::get_system_info();
+			const auto system_id = utils::get_cpu_brand();
 			if (thread_count >= 32)
 			{
 				if (system_id.find("3950X") != umax)
@@ -2399,6 +2399,30 @@ void thread_ctrl::set_native_priority(int priority)
 #endif
 }
 
+u64 thread_ctrl::get_process_affinity_mask()
+{
+	static const u64 mask = []() -> u64
+	{
+#ifdef _WIN32
+		DWORD_PTR res, _sys;
+		if (!GetProcessAffinityMask(GetCurrentProcess(), &res, &_sys))
+		{
+			sig_log.error("Failed to get process affinity mask.");
+			return 0;
+		}
+
+		return res;
+#else
+		// Assume it's called from the main thread (this is a bit shaky)
+		return thread_ctrl::get_thread_affinity_mask();
+#endif
+	}();
+
+	return mask;
+}
+
+DECLARE(thread_ctrl::process_affinity_mask) = get_process_affinity_mask();
+
 void thread_ctrl::set_thread_affinity_mask(u64 mask)
 {
 #ifdef _WIN32
@@ -2441,12 +2465,7 @@ void thread_ctrl::set_thread_affinity_mask(u64 mask)
 u64 thread_ctrl::get_thread_affinity_mask()
 {
 #ifdef _WIN32
-	DWORD_PTR res, _sys;
-	if (!GetProcessAffinityMask(GetCurrentProcess(), &res, &_sys))
-	{
-		sig_log.error("Failed to get process affinity mask.");
-		return 0;
-	}
+	const u64 res = get_process_affinity_mask();
 
 	if (DWORD_PTR result = SetThreadAffinityMask(GetCurrentThread(), res))
 	{
@@ -2470,7 +2489,7 @@ u64 thread_ctrl::get_thread_affinity_mask()
 		return 0;
 	}
 
-	u64 result;
+	u64 result = 0;
 
 	for (u32 core = 0; core < 64u; core++)
 	{
