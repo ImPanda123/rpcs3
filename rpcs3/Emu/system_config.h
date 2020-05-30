@@ -11,6 +11,11 @@ struct cfg_root : cfg::node
 {
 	struct node_core : cfg::node
 	{
+	private:
+		/** We don't wanna include the sysinfo header here */
+		bool has_rtm() const;
+
+	public:
 		static constexpr bool thread_scheduler_enabled_def =
 #ifdef _WIN32
 			true;
@@ -42,11 +47,12 @@ struct cfg_root : cfg::node
 		cfg::_bool spu_verification{ this, "SPU Verification", true }; // Should be enabled
 		cfg::_bool spu_cache{ this, "SPU Cache", true };
 		cfg::_bool spu_prof{ this, "SPU Profiler", false };
-		cfg::_enum<tsx_usage> enable_TSX{ this, "Enable TSX", tsx_usage::enabled }; // Enable TSX. Forcing this on Haswell/Broadwell CPUs should be used carefully
+		cfg::_enum<tsx_usage> enable_TSX{ this, "Enable TSX", has_rtm() ? tsx_usage::enabled : tsx_usage::disabled }; // Enable TSX. Forcing this on Haswell/Broadwell CPUs should be used carefully
 		cfg::_bool spu_accurate_xfloat{ this, "Accurate xfloat", false };
 		cfg::_bool spu_approx_xfloat{ this, "Approximate xfloat", true };
 		cfg::_bool llvm_accurate_dfma{ this, "LLVM Accurate DFMA", true }; // Enable accurate double-precision FMA for CPUs which do not support it natively
 		cfg::_bool llvm_ppu_accurate_vector_nan{ this, "PPU LLVM Accurate Vector NaN values", false };
+		cfg::_int<-64, 64> stub_ppu_traps{ this, "Stub PPU Traps", 0, true }; // Hack, skip PPU traps for rare cases where the trap is continueable (specify relative instructions to skip)
 
 		cfg::_bool debug_console_mode{ this, "Debug Console Mode", false }; // Debug console emulation, not recommended
 		cfg::_enum<lib_loading_type> lib_loading{ this, "Lib Loader", lib_loading_type::liblv2only };

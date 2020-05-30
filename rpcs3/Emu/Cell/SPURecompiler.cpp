@@ -5787,7 +5787,7 @@ public:
 						break;
 					}
 				}
-	
+
 				const auto eal = get_reg_fixed<u32>(s_reg_mfc_eal);
 				const auto lsa = get_reg_fixed<u32>(s_reg_mfc_lsa);
 				const auto tag = get_reg_fixed<u8>(s_reg_mfc_tag);
@@ -5803,6 +5803,11 @@ public:
 
 				switch (u64 cmd = ci->getZExtValue())
 				{
+				case MFC_SDCRT_CMD:
+				case MFC_SDCRTST_CMD:
+				{
+					return;
+				}
 				case MFC_GETLLAR_CMD:
 				case MFC_PUTLLC_CMD:
 				case MFC_PUTLLUC_CMD:
@@ -5816,6 +5821,7 @@ public:
 				case MFC_GETL_CMD:
 				case MFC_GETLB_CMD:
 				case MFC_GETLF_CMD:
+				case MFC_SDCRZ_CMD:
 				{
 					// TODO
 					m_ir->CreateBr(next);
@@ -6000,6 +6006,10 @@ public:
 				case MFC_GETL_CMD:
 				case MFC_GETLB_CMD:
 				case MFC_GETLF_CMD:
+				{
+					break;
+				}
+				case MFC_SDCRZ_CMD:
 				{
 					break;
 				}
@@ -7281,6 +7291,22 @@ public:
 		return eval(fmuladd(ca, cb, c));
 	}
 
+	// Checks for postive and negative zero, or Denormal (treated as zero)
+	bool is_spu_float_zero(v128 a)
+	{
+		for (u32 i = 0; i < 4; i++)
+		{
+			const u32 exponent = a._u32[i] & 0x7f800000u;
+
+			if (exponent)
+			{
+				// Normalized number
+				return false;
+			}
+		}
+		return true;
+	}
+
 	void FREST(spu_opcode_t op)
 	{
 		// TODO
@@ -7316,6 +7342,55 @@ public:
 
 		const auto a = get_vr<f32[4]>(op.ra);
 		const auto b = get_vr<f32[4]>(op.rb);
+
+		if (auto cv = llvm::dyn_cast<llvm::Constant>(b.value))
+		{
+			v128 data = get_const_vector(cv, m_pos, 5000);
+			bool safe_int_compare = true;
+
+			for (u32 i = 0; i < 4; i++)
+			{
+				const u32 exponent = data._u32[i] & 0x7f800000u;
+
+				if (data._u32[i] > 0x7f7fffffu || !exponent)
+				{
+					// Postive or negative zero, Denormal (treated as zero), Negative constant, or Normalized number with exponent +127
+		 			// Cannot used signed integer compare safely
+					safe_int_compare = false;
+					break;
+				}
+			}
+
+			if (safe_int_compare)
+			{
+				set_vr(op.rt, sext<s32[4]>(bitcast<s32[4]>(a) > bitcast<s32[4]>(b)));
+				return;
+			}
+		}
+
+		if (auto cv = llvm::dyn_cast<llvm::Constant>(a.value))
+		{
+			v128 data = get_const_vector(cv, m_pos, 5000);
+			bool safe_int_compare = true;
+
+			for (u32 i = 0; i < 4; i++)
+			{
+				const u32 exponent = data._u32[i] & 0x7f800000u;
+
+				if (data._u32[i] > 0x7f7fffffu || !exponent)
+				{
+					// See above
+					safe_int_compare = false;
+					break;
+				}
+			}
+
+			if (safe_int_compare)
+			{
+				set_vr(op.rt, sext<s32[4]>(bitcast<s32[4]>(a) > bitcast<s32[4]>(b)));
+				return;
+			}
+		}
 
 		if (g_cfg.core.spu_approx_xfloat)
 		{
@@ -7460,7 +7535,7 @@ public:
 		{
 			v128 data = get_const_vector(cv, m_pos, 4000);
 
-			if (data == v128{})
+			if (is_spu_float_zero(data))
 			{
 				r = eval(ca * cb);
 				return r;
@@ -8018,7 +8093,7 @@ public:
 
 			// Clear stack mirror and return by tail call to the provided return address
 			m_ir->CreateStore(splat<u64[2]>(-1).eval(m_ir), m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack0.value), get_type<u64(*)[2]>()));
-			const auto targ = m_ir->CreateAdd(m_ir->CreateLShr(_ret, 32), m_ir->getInt64(reinterpret_cast<u64>(jit_runtime::alloc(0, 0))));
+			const auto targ = m_ir->CreateAdd(m_ir->CreateLShr(_ret, 32), get_segment_base());
 			tail_chunk(m_ir->CreateIntToPtr(targ, m_finfo->chunk->getFunctionType()->getPointerTo()), m_ir->CreateTrunc(m_ir->CreateLShr(link, 32), get_type<u32>()));
 			m_ir->SetInsertPoint(fail);
 		}
@@ -8383,12 +8458,20 @@ public:
 			const auto pfunc = add_function(m_pos + 4);
 			const auto stack0 = eval(zext<u64>(extract(get_reg_fixed(1), 3) & 0x3fff0) + ::offset32(&spu_thread::stack_mirror));
 			const auto stack1 = eval(stack0 + 8);
-			const auto rel_ptr = m_ir->CreateSub(m_ir->CreatePtrToInt(pfunc->chunk, get_type<u64>()), m_ir->getInt64(reinterpret_cast<u64>(jit_runtime::alloc(0, 0))));
+			const auto rel_ptr = m_ir->CreateSub(m_ir->CreatePtrToInt(pfunc->chunk, get_type<u64>()), get_segment_base());
 			const auto ptr_plus_op = m_ir->CreateOr(m_ir->CreateShl(rel_ptr, 32), m_ir->getInt64(m_next_op));
 			const auto base_plus_pc = m_ir->CreateOr(m_ir->CreateShl(m_ir->CreateZExt(m_base_pc, get_type<u64>()), 32), m_ir->getInt64(m_pos + 4));
 			m_ir->CreateStore(ptr_plus_op, m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack0.value), get_type<u64*>()));
 			m_ir->CreateStore(base_plus_pc, m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack1.value), get_type<u64*>()));
 		}
+	}
+
+	llvm::Value* get_segment_base()
+	{
+		const auto type = llvm::FunctionType::get(get_type<void>(), {}, false);
+		const auto func = llvm::cast<llvm::Function>(m_module->getOrInsertFunction("spu_segment_base", type).getCallee());
+		m_engine->updateGlobalMapping("spu_segment_base", reinterpret_cast<u64>(jit_runtime::alloc(0, 0)));
+		return m_ir->CreatePtrToInt(func, get_type<u64>());
 	}
 
 	static decltype(&spu_llvm_recompiler::UNK) decode(u32 op);
