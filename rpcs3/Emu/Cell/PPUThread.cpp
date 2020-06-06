@@ -66,6 +66,8 @@ const bool s_use_ssse3 = utils::has_ssse3();
 
 extern u64 get_guest_system_time();
 
+extern atomic_t<u64> g_watchdog_hold_ctr;
+
 extern atomic_t<const char*> g_progr;
 extern atomic_t<u32> g_progr_ptotal;
 extern atomic_t<u32> g_progr_pdone;
@@ -1678,6 +1680,9 @@ extern void ppu_initialize(const ppu_module& info)
 			atomic_t<u64> index = 0;
 		};
 
+		// Prevent watchdog thread from terminating
+		g_watchdog_hold_ctr++;
+
 		named_thread_group threads(fmt::format("PPUW.%u.", ++g_fxo->get<thread_index_allocator>()->index), thread_count, [&]()
 		{
 			// Set low priority
@@ -1707,6 +1712,8 @@ extern void ppu_initialize(const ppu_module& info)
 		});
 
 		threads.join();
+
+		g_watchdog_hold_ctr--;
 
 		if (Emu.IsStopped() || !get_current_cpu_thread())
 		{
@@ -1885,7 +1892,7 @@ static void ppu_initialize2(jit_compiler& jit, const ppu_module& module_part, co
 			}
 		}
 
-		legacy::PassManager mpm;
+		//legacy::PassManager mpm;
 
 		// Remove unused functions, structs, global variables, etc
 		//mpm.add(createStripDeadPrototypesPass());
