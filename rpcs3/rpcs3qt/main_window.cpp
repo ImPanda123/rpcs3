@@ -1488,24 +1488,8 @@ void main_window::CreateConnects()
 
 	auto open_pad_settings = [this]
 	{
-		if (!Emu.IsStopped())
-		{
-			Emu.GetCallbacks().enable_pads(false);
-		}
 		pad_settings_dialog dlg(this);
-		connect(&dlg, &QDialog::finished, [this](int/* result*/)
-		{
-			if (Emu.IsStopped())
-			{
-				return;
-			}
-			Emu.GetCallbacks().reset_pads(Emu.GetTitleID());
-		});
 		dlg.exec();
-		if (!Emu.IsStopped())
-		{
-			Emu.GetCallbacks().enable_pads(true);
-		}
 	};
 
 	connect(ui->confPadsAct, &QAction::triggered, open_pad_settings);
@@ -1551,7 +1535,18 @@ void main_window::CreateConnects()
 
 	connect(ui->actionManage_Game_Patches, &QAction::triggered, [this]
 	{
-		patch_manager_dialog patch_manager(this);
+		std::unordered_map<std::string, std::set<std::string>> games;
+		if (m_game_list_frame)
+		{
+			for (const auto game : m_game_list_frame->GetGameInfo())
+			{
+				if (game)
+				{
+					games[game->info.serial].insert(game_list_frame::GetGameVersion(game));
+				}
+			}
+		}
+		patch_manager_dialog patch_manager(m_gui_settings, games, this);
 		patch_manager.exec();
  	});
 

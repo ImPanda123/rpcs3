@@ -19,6 +19,7 @@
 #include "Utilities/types.h"
 #include "Utilities/lockless.h"
 #include "util/yaml.hpp"
+#include "Input/pad_thread.h"
 
 #include <algorithm>
 #include <iterator>
@@ -1006,27 +1007,12 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	});
 	connect(pad_configure, &QAction::triggered, [=, this]()
 	{
-		if (!Emu.IsStopped())
-		{
-			Emu.GetCallbacks().enable_pads(false);
-		}
 		pad_settings_dialog dlg(this, &current_game);
-		connect(&dlg, &QDialog::finished, [this](int/* result*/)
-		{
-			if (Emu.IsStopped())
-			{
-				return;
-			}
-			Emu.GetCallbacks().reset_pads(Emu.GetTitleID());
-		});
+
 		if (dlg.exec() == QDialog::Accepted && !gameinfo->hasCustomPadConfig)
 		{
 			gameinfo->hasCustomPadConfig = true;
 			ShowCustomConfigIcon(gameinfo);
-		}
-		if (!Emu.IsStopped())
-		{
-			Emu.GetCallbacks().enable_pads(true);
 		}
 	});
 	connect(hide_serial, &QAction::triggered, [serial, this](bool checked)
@@ -1250,9 +1236,9 @@ bool game_list_frame::RemoveCustomPadConfiguration(const std::string& title_id, 
 		}
 		if (!Emu.IsStopped() && Emu.GetTitleID() == title_id)
 		{
-			Emu.GetCallbacks().enable_pads(false);
-			Emu.GetCallbacks().reset_pads(title_id);
-			Emu.GetCallbacks().enable_pads(true);
+			pad::set_enabled(false);
+			pad::reset(title_id);
+			pad::set_enabled(true);
 		}
 		game_list_log.notice("Removed pad configuration directory: %s", config_dir);
 		return true;
@@ -1960,20 +1946,13 @@ void game_list_frame::PopulateGameList()
 		}
 
 		// Version
-		QString app_version = qstr(game->info.app_ver);
-		const QString unknown = localized.category.unknown;
-
-		if (app_version == unknown)
-		{
-			// Fall back to Disc/Pkg Revision
-			app_version = qstr(game->info.version);
-		}
+		QString app_version = qstr(GetGameVersion(game));
 
 		if (game->info.bootable && !game->compat.latest_version.isEmpty())
 		{
 			// If the app is bootable and the compat database contains info about the latest patch version:
 			// add a hint for available software updates if the app version is unknown or lower than the latest version.
-			if (app_version == unknown || game->compat.latest_version.toDouble() > app_version.toDouble())
+			if (app_version == localized.category.unknown || game->compat.latest_version.toDouble() > app_version.toDouble())
 			{
 				app_version = tr("%0 (Update available: %1)").arg(app_version, game->compat.latest_version);
 			}
@@ -2243,4 +2222,20 @@ void game_list_frame::SetShowCompatibilityInGrid(bool show)
 	m_draw_compat_status_to_grid = show;
 	RepaintIcons();
 	m_gui_settings->SetValue(gui::gl_draw_compat, show);
+}
+
+QList<game_info> game_list_frame::GetGameInfo() const
+{
+	return m_game_data;
+}
+
+std::string game_list_frame::GetGameVersion(const game_info& game)
+{
+	if (game->info.app_ver == sstr(Localized().category.unknown))
+	{
+		// Fall back to Disc/Pkg Revision
+		return game->info.version;
+	}
+
+	return game->info.app_ver;
 }

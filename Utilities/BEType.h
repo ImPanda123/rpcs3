@@ -1,4 +1,5 @@
-#pragma once
+﻿#ifndef BETYPE_H_GUARD
+#define BETYPE_H_GUARD
 
 #include "types.h"
 #include "util/endian.hpp"
@@ -14,7 +15,8 @@
 // 128-bit vector type and also se_storage<> storage type
 union alignas(16) v128
 {
-	char _bytes[16];
+	uchar _bytes[16];
+	char _chars[16];
 
 	template <typename T, std::size_t N, std::size_t M>
 	struct masked_array_t // array type accessed as (index ^ M)
@@ -355,12 +357,12 @@ union alignas(16) v128
 
 	bool operator==(const v128& right) const
 	{
-		return _u64[0] == right._u64[0] && _u64[1] == right._u64[1];
+		return _mm_movemask_epi8(v128::eq32(*this, right).vi) == 0xffff;
 	}
 
 	bool operator!=(const v128& right) const
 	{
-		return _u64[0] != right._u64[0] || _u64[1] != right._u64[1];
+		return !operator==(right);
 	}
 
 	// result = (~left) & (right)
@@ -371,8 +373,7 @@ union alignas(16) v128
 
 	void clear()
 	{
-		_u64[0] = 0;
-		_u64[1] = 0;
+		*this = {};
 	}
 };
 
@@ -403,7 +404,7 @@ inline v128 operator^(const v128& left, const v128& right)
 
 inline v128 operator~(const v128& other)
 {
-	return v128::from64(~other._u64[0], ~other._u64[1]);
+	return other ^ v128::from32p(UINT32_MAX); // XOR with ones
 }
 
 using stx::se_t;
@@ -506,3 +507,5 @@ struct fmt_unveil<se_t<T, Se, Align>, void>
 		return fmt_unveil<T>::get(arg);
 	}
 };
+
+#endif // BETYPE_H_GUARD

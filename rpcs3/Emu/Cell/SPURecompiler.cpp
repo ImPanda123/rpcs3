@@ -5693,6 +5693,13 @@ public:
 		{
 			// TODO
 			m_ir->CreateStore(val.value, spu_ptr<u32>(&spu_thread::ch_tag_mask));
+			const auto next = llvm::BasicBlock::Create(m_context, "", m_function);
+			const auto _mfc = llvm::BasicBlock::Create(m_context, "", m_function);
+			m_ir->CreateCondBr(m_ir->CreateICmpNE(m_ir->CreateLoad(spu_ptr<u32>(&spu_thread::ch_tag_upd)), m_ir->getInt32(MFC_TAG_UPDATE_IMMEDIATE)), _mfc, next);
+			m_ir->SetInsertPoint(_mfc);
+			call("spu_write_channel", &exec_wrch, m_thread, m_ir->getInt32(op.ra), val.value);
+			m_ir->CreateBr(next);
+			m_ir->SetInsertPoint(next);
 			return;
 		}
 		case MFC_WrTagUpdate:
@@ -5708,23 +5715,16 @@ public:
 				const auto stat_ptr  = spu_ptr<u64>(&spu_thread::ch_tag_stat);
 				const auto stat_val  = m_ir->CreateOr(m_ir->CreateZExt(completed, get_type<u64>()), INT64_MIN);
 
-				if (upd == 0)
+				if (upd == MFC_TAG_UPDATE_IMMEDIATE)
 				{
-					m_ir->CreateStore(m_ir->getInt32(0), upd_ptr);
+					m_ir->CreateStore(m_ir->getInt32(MFC_TAG_UPDATE_IMMEDIATE), upd_ptr);
 					m_ir->CreateStore(stat_val, stat_ptr);
 					return;
 				}
-				else if (upd == 1)
+				else if (upd <= MFC_TAG_UPDATE_ALL)
 				{
-					const auto cond = m_ir->CreateICmpNE(completed, m_ir->getInt32(0));
-					m_ir->CreateStore(m_ir->CreateSelect(cond, m_ir->getInt32(1), m_ir->getInt32(0)), upd_ptr);
-					m_ir->CreateStore(m_ir->CreateSelect(cond, stat_val, m_ir->getInt64(0)), stat_ptr);
-					return;
-				}
-				else if (upd == 2)
-				{
-					const auto cond = m_ir->CreateICmpEQ(completed, tag_mask);
-					m_ir->CreateStore(m_ir->CreateSelect(cond, m_ir->getInt32(2), m_ir->getInt32(0)), upd_ptr);
+					const auto cond = upd == MFC_TAG_UPDATE_ANY ? m_ir->CreateICmpNE(completed, m_ir->getInt32(0)) : m_ir->CreateICmpEQ(completed, tag_mask);
+					m_ir->CreateStore(m_ir->CreateSelect(cond, m_ir->getInt32(MFC_TAG_UPDATE_IMMEDIATE), m_ir->getInt32(static_cast<u32>(upd))), upd_ptr);
 					m_ir->CreateStore(m_ir->CreateSelect(cond, stat_val, m_ir->getInt64(0)), stat_ptr);
 					return;
 				}
@@ -7350,13 +7350,10 @@ public:
 		{
 			v128 data = get_const_vector(cv, m_pos, 5000);
 			bool safe_int_compare = true;
-			bool safe_simple_compare = true;
 
 			for (u32 i = 0; i < 4; i++)
 			{
 				const u32 exponent = data._u32[i] & 0x7f800000u;
-				const u32 sign_bit = data._u32[i] & 0x80000000u;
-				const u32 absolute_float_bits = data._u32[i] & 0x7fffffffu;
 
 				if (data._u32[i] >= 0x7f7fffffu || !exponent)
 				{
@@ -7367,27 +7364,11 @@ public:
 					// this optimization for values outside of the range of x86 floating point hardware.
 					safe_int_compare = false;
 				}
-
-				if (absolute_float_bits < 0x7f7fffffu)
-				{
-					// Zero or a float in normalized range for x86
-					continue;
-				}
-				else
-				{
-					safe_simple_compare = false;
-				}
 			}
 
 			if (safe_int_compare)
 			{
 				set_vr(op.rt, sext<s32[4]>(bitcast<s32[4]>(a) > bitcast<s32[4]>(b)));
-				return;
-			}
-
-			if (safe_simple_compare)
-			{
-				set_vr(op.rt, sext<s32[4]>(fcmp_uno(a > b)));
 				return;
 			}
 		}
