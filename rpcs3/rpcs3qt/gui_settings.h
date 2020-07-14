@@ -112,6 +112,7 @@ namespace gui
 	const QString notes        = "Notes";
 	const QString titles       = "Titles";
 	const QString localization = "Localization";
+	const QString pad_settings = "PadSettings";
 
 	const QColor gl_icon_color = QColor(240, 240, 240, 255);
 
@@ -214,7 +215,8 @@ namespace gui
 	const gui_save tr_games_state   = gui_save(trophy, "games_state",   QByteArray());
 	const gui_save tr_trophy_state  = gui_save(trophy, "trophy_state",  QByteArray());
 
-	const gui_save pm_geometry       = gui_save(patches, "geometry",      QByteArray());
+	const gui_save pm_show_owned     = gui_save(patches, "show_owned",     false);
+	const gui_save pm_geometry       = gui_save(patches, "geometry",       QByteArray());
 	const gui_save pm_splitter_state = gui_save(patches, "splitter_state", QByteArray());
 
 	const gui_save sd_geometry   = gui_save(savedata, "geometry",   QByteArray());
@@ -225,6 +227,8 @@ namespace gui
 	const gui_save um_active_user = gui_save(users, "active_user", "00000001");
 
 	const gui_save loc_language = gui_save(localization, "language", "en");
+
+	const gui_save pads_show_emulated = gui_save(pad_settings, "show_emulated_values", false);
 }
 
 /** Class for GUI settings..

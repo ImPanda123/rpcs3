@@ -66,10 +66,13 @@ main_window::main_window(std::shared_ptr<gui_settings> gui_settings, std::shared
 
 	// We have to setup the ui before using a translation
 	ui->setupUi(this);
+
+	setAttribute(Qt::WA_DeleteOnClose);
 }
 
 main_window::~main_window()
 {
+	SaveWindowState();
 	delete ui;
 }
 
@@ -176,10 +179,49 @@ void main_window::Init()
 	// Fix possible hidden game list columns. The game list has to be visible already. Use this after show()
 	m_game_list_frame->FixNarrowColumns();
 
-#if defined(_WIN32) || defined(__linux__)
-	if (m_gui_settings->GetValue(gui::m_check_upd_start).toBool())
+	// RPCS3 Updater
+
+	QMenu* download_menu = new QMenu(tr("Update Available!"));
+
+	QAction *download_action = new QAction(tr("Download Update"), download_menu);
+	connect(download_action, &QAction::triggered, this, [this]
 	{
-		m_updater.check_for_updates(true, this);
+		m_updater.update();
+	});
+
+	download_menu->addAction(download_action);
+
+#ifdef _WIN32
+	// Use a menu at the top right corner to indicate the new version.
+	QMenuBar *corner_bar = new QMenuBar(ui->menuBar);
+	m_download_menu_action = corner_bar->addMenu(download_menu);
+	ui->menuBar->setCornerWidget(corner_bar);
+	ui->menuBar->cornerWidget()->setVisible(false);
+#else
+	// Append a menu to the right of the regular menus to indicate the new version.
+	// Some distros just can't handle corner widgets at the moment.
+	m_download_menu_action = ui->menuBar->addMenu(download_menu);
+#endif
+
+	ASSERT(m_download_menu_action);
+	m_download_menu_action->setVisible(false);
+
+	connect(&m_updater, &update_manager::signal_update_available, this, [this](bool update_available)
+	{
+		if (ui->menuBar && ui->menuBar->cornerWidget())
+		{
+			ui->menuBar->cornerWidget()->setVisible(update_available);
+		}
+		if (m_download_menu_action)
+		{
+			m_download_menu_action->setVisible(update_available);
+		}
+	});
+
+#if defined(_WIN32) || defined(__linux__)
+	if (const auto update_value = m_gui_settings->GetValue(gui::m_check_upd_start).toString(); update_value != "false")
+	{
+		m_updater.check_for_updates(true, update_value != "true", this);
 	}
 #endif
 }
@@ -1212,7 +1254,7 @@ QAction* main_window::CreateRecentAction(const q_string_pair& entry, const uint&
 	}
 
 	// connect boot
-	connect(act, &QAction::triggered, [=, this]() {BootRecentAction(act); });
+	connect(act, &QAction::triggered, [act, this]() {BootRecentAction(act); });
 
 	return act;
 }
@@ -1488,7 +1530,7 @@ void main_window::CreateConnects()
 
 	auto open_pad_settings = [this]
 	{
-		pad_settings_dialog dlg(this);
+		pad_settings_dialog dlg(m_gui_settings, this);
 		dlg.exec();
 	};
 
@@ -1538,7 +1580,7 @@ void main_window::CreateConnects()
 		std::unordered_map<std::string, std::set<std::string>> games;
 		if (m_game_list_frame)
 		{
-			for (const auto game : m_game_list_frame->GetGameInfo())
+			for (const auto& game : m_game_list_frame->GetGameInfo())
 			{
 				if (game)
 				{
@@ -1675,7 +1717,7 @@ void main_window::CreateConnects()
 			QMessageBox::warning(this, tr("Auto-updater"), tr("Please stop the emulation before trying to update."));
 			return;
 		}
-		m_updater.check_for_updates(false, this);
+		m_updater.check_for_updates(false, false, this);
 	});
 
 	connect(ui->aboutAct, &QAction::triggered, [this]
@@ -2113,7 +2155,7 @@ void main_window::mouseDoubleClickEvent(QMouseEvent *event)
 	}
 }
 
-/** Override the Qt close event to have the emulator stop and the application die.  May add a warning dialog in future.
+/** Override the Qt close event to have the emulator stop and the application die.
 */
 void main_window::closeEvent(QCloseEvent* closeEvent)
 {
@@ -2123,17 +2165,8 @@ void main_window::closeEvent(QCloseEvent* closeEvent)
 		return;
 	}
 
-	// Cleanly stop the emulator.
-	Emu.Stop();
-
-	SaveWindowState();
-
-	// I need the gui settings to sync, and that means having the destructor called as guiSetting's parent is main_window.
-	setAttribute(Qt::WA_DeleteOnClose);
-	QMainWindow::close();
-
-	// It's possible to have other windows open, like games.  So, force the application to die.
-	QApplication::quit();
+	// Cleanly stop and quit the emulator.
+	Emu.Quit(true);
 }
 
 /**

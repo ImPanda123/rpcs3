@@ -8,11 +8,13 @@
 #include "persistent_settings.h"
 #include "gs_frame.h"
 #include "gl_gs_frame.h"
+#include "display_sleep_control.h"
 
 #ifdef WITH_DISCORD_RPC
 #include "_discord_utils.h"
 #endif
 
+#include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/RSX/Overlays/overlay_perf_metrics.h"
 #include "trophy_notification_helper.h"
 #include "save_data_dialog.h"
@@ -267,13 +269,21 @@ void gui_application::InitializeCallbacks()
 {
 	EmuCallbacks callbacks = CreateCallbacks();
 
-	callbacks.exit = [this](bool force_quit)
+	callbacks.exit = [this](bool force_quit) -> bool
 	{
 		// Close rpcs3 if closed in no-gui mode
 		if (force_quit || !m_main_window)
 		{
+			if (m_main_window)
+			{
+				// Close main window in order to save its window state
+				m_main_window->close();
+			}
 			quit();
+			return true;
 		}
+
+		return false;
 	};
 	callbacks.call_after = [this](std::function<void()> func)
 	{
@@ -452,7 +462,20 @@ void gui_application::OnChangeStyleSheetRequest(const QString& path)
 
 void gui_application::OnEmuSettingsChange()
 {
+	if (Emu.IsRunning())
+	{
+		if (g_cfg.misc.prevent_display_sleep)
+		{
+			enable_display_sleep();
+		}
+		else
+		{
+			disable_display_sleep();
+		}
+	}
+
 	Emu.ConfigureLogs();
+	audio::configure_audio();
 	rsx::overlays::reset_performance_overlay();
 }
 
