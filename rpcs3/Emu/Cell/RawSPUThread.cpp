@@ -22,7 +22,7 @@ inline void try_start(spu_thread& spu)
 	}).second)
 	{
 		spu.state -= cpu_flag::stop;
-		thread_ctrl::notify(static_cast<named_thread<spu_thread>&>(spu));
+		thread_ctrl::raw_notify(static_cast<named_thread<spu_thread>&>(spu));
 	}
 };
 
@@ -123,7 +123,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 	case SPU_Out_MBox_offs:
 	{
-		value = ch_out_mbox.pop(*this);
+		value = ch_out_mbox.pop();
 		return true;
 	}
 
@@ -262,7 +262,7 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 			if (get_current_cpu_thread() == this)
 			{
 				// TODO
-				state += cpu_flag::stop;
+				state += cpu_flag::stop + cpu_flag::ret;
 				return true;
 			}
 
@@ -270,7 +270,7 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 			if (status_npc.load().status & SPU_STATUS_RUNNING)
 			{
-				state += cpu_flag::stop;
+				state += cpu_flag::stop + cpu_flag::ret;
 
 				for (status_npc_sync_var old; (old = status_npc).status & SPU_STATUS_RUNNING;)
 				{

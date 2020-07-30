@@ -322,7 +322,9 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 
 	sys_spu.warning("sys_spu_thread_initialize(thread=*0x%x, group=0x%x, spu_num=%d, img=*0x%x, attr=*0x%x, arg=*0x%x)", thread, group_id, spu_num, img, attr, arg);
 
-	if (attr->name_len > 0x80 || attr->option & ~(SYS_SPU_THREAD_OPTION_DEC_SYNC_TB_ENABLE | SYS_SPU_THREAD_OPTION_ASYNC_INTR_ENABLE))
+	const u32 option = attr->option;
+
+	if (attr->name_len > 0x80 || option & ~(SYS_SPU_THREAD_OPTION_DEC_SYNC_TB_ENABLE | SYS_SPU_THREAD_OPTION_ASYNC_INTR_ENABLE))
 	{
 		return CELL_EINVAL;
 	}
@@ -392,7 +394,7 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 		return CELL_EBUSY;
 	}
 
-	if (u32 option = attr->option)
+	if (option & SYS_SPU_THREAD_OPTION_ASYNC_INTR_ENABLE)
 	{
 		sys_spu.warning("Unimplemented SPU Thread options (0x%x)", option);
 	}
@@ -412,7 +414,7 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 			fmt::append(full_name, "%s ", thread_name);
 		}
 
-		const auto spu = std::make_shared<named_thread<spu_thread>>(full_name, ls_addr, group.get(), spu_num, thread_name, tid);
+		const auto spu = std::make_shared<named_thread<spu_thread>>(full_name, ls_addr, group.get(), spu_num, thread_name, tid, false, option);
 		group->threads[inited] = spu;
 		group->threads_map[spu_num] = static_cast<s8>(inited);
 		return spu;
@@ -754,7 +756,7 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 		if (thread && ran_threads--)
 		{
 			thread->state -= cpu_flag::stop;
-			thread_ctrl::notify(*thread);
+			thread_ctrl::raw_notify(*thread);
 		}
 	}
 
@@ -904,7 +906,7 @@ error_code sys_spu_thread_group_resume(ppu_thread& ppu, u32 id)
 		if (thread)
 		{
 			thread->state -= cpu_flag::suspend;
-			thread_ctrl::notify(*thread);
+			thread_ctrl::raw_notify(*thread);
 		}
 	}
 
@@ -1003,7 +1005,7 @@ error_code sys_spu_thread_group_terminate(ppu_thread& ppu, u32 id, s32 value)
 	{
 		if (thread)
 		{
-			thread->state += cpu_flag::stop;
+			thread->state += cpu_flag::stop + cpu_flag::ret;
 		}
 	}
 
@@ -1011,7 +1013,7 @@ error_code sys_spu_thread_group_terminate(ppu_thread& ppu, u32 id, s32 value)
 	{
 		if (thread && group->running)
 		{
-			thread_ctrl::notify(*thread);
+			thread_ctrl::raw_notify(*thread);
 		}
 	}
 
@@ -2203,7 +2205,7 @@ error_code raw_spu_read_puint_mb(u32 id, vm::ptr<u32> value)
 		return CELL_ESRCH;
 	}
 
-	*value = thread->ch_out_intr_mbox.pop(*thread);
+	*value = thread->ch_out_intr_mbox.pop();
 
 	return CELL_OK;
 }

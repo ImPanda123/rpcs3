@@ -6435,11 +6435,29 @@ public:
 		set_vr(op.rt, sext<s8[16]>(m));
 	}
 
+	template <typename TA>
+	static auto byteswap(TA&& a)
+	{
+		return zshuffle(std::forward<TA>(a), 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+	}
+
 	void ROTQBYBI(spu_opcode_t op)
 	{
+		const auto a = get_vr<u8[16]>(op.ra);
+
+		// Data with swapped endian from a load instruction
+		if (auto [ok, v0] = match_expr(a, byteswap(match<u8[16]>())); ok)
+		{
+			const auto as = byteswap(a);
+			const auto sc = build<u8[16]>(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+			const auto sh = (sc + (zshuffle(get_vr<u8[16]>(op.rb), 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12) >> 3)) & 0xf;
+			set_vr(op.rt, pshufb(as, sh));
+			return;
+		}
+
 		const auto sc = build<u8[16]>(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
 		const auto sh = (sc - (zshuffle(get_vr<u8[16]>(op.rb), 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12) >> 3)) & 0xf;
-		set_vr(op.rt, pshufb(get_vr<u8[16]>(op.ra), sh));
+		set_vr(op.rt, pshufb(a, sh));
 	}
 
 	void ROTQMBYBI(spu_opcode_t op)
@@ -6554,6 +6572,16 @@ public:
 			value_t<u8[16]> r;
 			r.value = call("spu_rotqby", &exec_rotqby, a.value, eval(extract(b, 12)).value);
 			set_vr(op.rt, r);
+			return;
+		}
+
+		// Data with swapped endian from a load instruction
+		if (auto [ok, v0] = match_expr(a, byteswap(match<u8[16]>())); ok)
+		{
+			const auto as = byteswap(a);
+			const auto sc = build<u8[16]>(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+			const auto sh = eval((sc + zshuffle(b, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12)) & 0xf);
+			set_vr(op.rt, pshufb(as, sh));
 			return;
 		}
 
@@ -6679,6 +6707,7 @@ public:
 
 	void SHLQBYI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.i7) return set_vr(op.rt, get_vr(op.ra)); // For expressions matching
 		const auto a = get_vr<u8[16]>(op.ra);
 		const auto sc = build<u8[16]>(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
 		const auto sh = sc - (get_imm<u8[16]>(op.i7, false) & 0x1f);
@@ -6878,16 +6907,19 @@ public:
 
 	void ORI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra)); // For expressions matching
 		set_vr(op.rt, get_vr<s32[4]>(op.ra) | get_imm<s32[4]>(op.si10));
 	}
 
 	void ORHI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s16[8]>(op.ra) | get_imm<s16[8]>(op.si10));
 	}
 
 	void ORBI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s8[16]>(op.ra) | get_imm<s8[16]>(op.si10));
 	}
 
@@ -6903,41 +6935,49 @@ public:
 
 	void ANDI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s32[4]>(op.ra) & get_imm<s32[4]>(op.si10));
 	}
 
 	void ANDHI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s16[8]>(op.ra) & get_imm<s16[8]>(op.si10));
 	}
 
 	void ANDBI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s8[16]>(op.ra) & get_imm<s8[16]>(op.si10));
 	}
 
 	void AI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s32[4]>(op.ra) + get_imm<s32[4]>(op.si10));
 	}
 
 	void AHI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s16[8]>(op.ra) + get_imm<s16[8]>(op.si10));
 	}
 
 	void XORI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s32[4]>(op.ra) ^ get_imm<s32[4]>(op.si10));
 	}
 
 	void XORHI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s16[8]>(op.ra) ^ get_imm<s16[8]>(op.si10));
 	}
 
 	void XORBI(spu_opcode_t op)
 	{
+		if (!m_interp_magn && !op.si10) return set_vr(op.rt, get_vr(op.ra));
 		set_vr(op.rt, get_vr<s8[16]>(op.ra) ^ get_imm<s8[16]>(op.si10));
 	}
 
@@ -7045,6 +7085,71 @@ public:
 			return;
 		}
 
+		const auto c = get_vr(op.rc);
+
+		// Check if the constant mask doesn't require bit granularity
+		if (auto [ok, mask] = get_const_vector(c.value, m_pos, 8000); ok)
+		{
+			bool sel_32 = true;
+			for (u32 i = 0; i < 4; i++)
+			{
+				if (mask._u32[i] && mask._u32[i] != 0xFFFFFFFF)
+				{
+					sel_32 = false;
+					break;
+				}
+			}
+
+			if (sel_32)
+			{
+				if (auto [a, b] = match_vrs<f64[4]>(op.ra, op.rb); a || b)
+				{
+					set_vr(op.rt4, select(noncast<s32[4]>(c) != 0,  get_vr<f64[4]>(op.rb), get_vr<f64[4]>(op.ra)));
+					return;
+				}
+				else if (auto [a, b] = match_vrs<f32[4]>(op.ra, op.rb); a || b)
+				{
+					set_vr(op.rt4, select(noncast<s32[4]>(c) != 0,  get_vr<f32[4]>(op.rb), get_vr<f32[4]>(op.ra)));
+					return;
+				}
+
+				set_vr(op.rt4, select(noncast<s32[4]>(c) != 0, get_vr<u32[4]>(op.rb), get_vr<u32[4]>(op.ra)));
+				return;
+			}
+			
+			bool sel_16 = true;
+			for (u32 i = 0; i < 8; i++)
+			{
+				if (mask._u16[i] && mask._u16[i] != 0xFFFF)
+				{
+					sel_16 = false;
+					break;
+				}
+			}
+
+			if (sel_16)
+			{
+				set_vr(op.rt4, select(bitcast<s16[8]>(c) != 0, get_vr<u16[8]>(op.rb), get_vr<u16[8]>(op.ra)));
+				return;
+			}
+			
+			bool sel_8 = true;
+			for (u32 i = 0; i < 16; i++)
+			{
+				if (mask._u8[i] && mask._u8[i] != 0xFF)
+				{
+					sel_8 = false;
+					break;
+				}
+			}
+
+			if (sel_8)
+			{
+				set_vr(op.rt4, select(bitcast<s8[16]>(c) != 0,get_vr<u8[16]>(op.rb), get_vr<u8[16]>(op.ra)));
+				return;
+			}
+		}
+
 		const auto op1 = get_reg_raw(op.rb);
 		const auto op2 = get_reg_raw(op.ra);
 
@@ -7061,7 +7166,6 @@ public:
 			return;
 		}
 
-		const auto c = get_vr(op.rc);
 		set_vr(op.rt4, (get_vr(op.rb) & c) | (get_vr(op.ra) & ~c));
 	}
 
@@ -7086,11 +7190,9 @@ public:
 
 		const auto c = get_vr<u8[16]>(op.rc);
 
-		if (auto ci = llvm::dyn_cast<llvm::Constant>(c.value))
+		if (auto [ok, mask] = get_const_vector(c.value, m_pos, 57216); ok)
 		{
 			// Optimization: SHUFB with constant mask
-			v128 mask = get_const_vector(ci, m_pos, 57216);
-
 			if (((mask._u64[0] | mask._u64[1]) & 0xe0e0e0e0e0e0e0e0) == 0)
 			{
 				// Trivial insert or constant shuffle (TODO)
@@ -7167,11 +7269,61 @@ public:
 			spu_log.todo("[0x%x] Const SHUFB mask: %s", m_pos, mask);
 		}
 
+		const auto a = get_vr<u8[16]>(op.ra);
+		const auto b = get_vr<u8[16]>(op.rb);
+
+		// Data with swapped endian from a load instruction
+		if (auto [ok, v0] = match_expr(a, byteswap(match<u8[16]>())); ok)
+		{
+			if (auto [ok, v1] = match_expr(b, byteswap(match<u8[16]>())); ok)
+			{
+				// Undo endian swapping, and rely on pshufb to re-reverse endianness
+				const auto x = avg(noncast<u8[16]>(sext<s8[16]>((c & 0xc0) == 0xc0)), noncast<u8[16]>(sext<s8[16]>((c & 0xe0) == 0xc0)));
+				const auto as = byteswap(a);
+				const auto bs = byteswap(b);
+				const auto ax = pshufb(as, c);
+				const auto bx = pshufb(bs, c);
+				set_vr(op.rt4, select(noncast<s8[16]>(c << 3) >= 0, ax, bx) | x);
+				return;
+			}
+
+			if (auto [ok, data] = get_const_vector(b.value, m_pos, 7000); ok)
+			{
+				const bool all_bytes_equiv = data == v128::from8p(data._u8[0]);
+				if (all_bytes_equiv)
+				{
+					// See above
+					const auto x = avg(noncast<u8[16]>(sext<s8[16]>((c & 0xc0) == 0xc0)), noncast<u8[16]>(sext<s8[16]>((c & 0xe0) == 0xc0)));
+					const auto as = byteswap(a);
+					const auto ax = pshufb(as, c);
+					set_vr(op.rt4, select(noncast<s8[16]>(c << 3) >= 0, ax, b) | x);
+					return;
+				}
+			}
+		}
+
+		if (auto [ok, v0] = match_expr(b, byteswap(match<u8[16]>())); ok)
+		{
+			if (auto [ok, data] = get_const_vector(a.value, m_pos, 7000); ok)
+			{
+				const bool all_bytes_equiv = data == v128::from8p(data._u8[0]);
+				if (all_bytes_equiv)
+				{
+					// See above
+					const auto x = avg(noncast<u8[16]>(sext<s8[16]>((c & 0xc0) == 0xc0)), noncast<u8[16]>(sext<s8[16]>((c & 0xe0) == 0xc0)));
+					const auto bs = byteswap(b);
+					const auto bx = pshufb(bs, c);
+					set_vr(op.rt4, select(noncast<s8[16]>(c << 3) >= 0, a, bx) | x);
+					return;
+				}
+			}
+		}
+
 		const auto x = avg(noncast<u8[16]>(sext<s8[16]>((c & 0xc0) == 0xc0)), noncast<u8[16]>(sext<s8[16]>((c & 0xe0) == 0xc0)));
 		const auto cr = eval(c ^ 0xf);
-		const auto a = pshufb(get_vr<u8[16]>(op.ra), cr);
-		const auto b = pshufb(get_vr<u8[16]>(op.rb), cr);
-		set_vr(op.rt4, select(noncast<s8[16]>(cr << 3) >= 0, a, b) | x);
+		const auto ax = pshufb(a, cr);
+		const auto bx = pshufb(b, cr);
+		set_vr(op.rt4, select(noncast<s8[16]>(cr << 3) >= 0, ax, bx) | x);
 	}
 
 	void MPYA(spu_opcode_t op)
@@ -7382,9 +7534,8 @@ public:
 		const auto a = get_vr<f32[4]>(op.ra);
 		const auto b = get_vr<f32[4]>(op.rb);
 
-		if (auto cv = llvm::dyn_cast<llvm::Constant>(b.value))
+		if (auto [ok, data] = get_const_vector(b.value, m_pos, 5000); ok)
 		{
-			v128 data = get_const_vector(cv, m_pos, 5000);
 			bool safe_int_compare = true;
 
 			for (u32 i = 0; i < 4; i++)
@@ -7409,9 +7560,8 @@ public:
 			}
 		}
 
-		if (auto cv = llvm::dyn_cast<llvm::Constant>(a.value))
+		if (auto [ok, data] = get_const_vector(a.value, m_pos, 5000); ok)
 		{
-			v128 data = get_const_vector(cv, m_pos, 5000);
 			bool safe_int_compare = true;
 
 			for (u32 i = 0; i < 4; i++)
@@ -7575,10 +7725,8 @@ public:
 
 		// Optimization: Emit only a floating multiply if the addend is zero
 		// This is odd since SPU code could just use the FM instruction, but it seems common enough
-		if (auto cv = llvm::dyn_cast<llvm::Constant>(c.value))
+		if (auto [ok, data] = get_const_vector(c.value, m_pos, 4000); ok)
 		{
-			v128 data = get_const_vector(cv, m_pos, 4000);
-
 			if (is_spu_float_zero(data))
 			{
 				r = eval(a * b);
@@ -7586,10 +7734,8 @@ public:
 			}
 		}
 
-		if (auto cv = llvm::dyn_cast<llvm::Constant>(b.value))
+		if (auto [ok, data] = get_const_vector(b.value, m_pos, 4000); ok)
 		{
-			v128 data = get_const_vector(cv, m_pos, 4000);
-
 			if (is_spu_float_zero(data))
 			{
 				// Just return the added value if either a or b is 0
@@ -7597,10 +7743,8 @@ public:
 			}
 		}
 
-		if (auto cv = llvm::dyn_cast<llvm::Constant>(a.value))
+		if (auto [ok, data] = get_const_vector(a.value, m_pos, 4000); ok)
 		{
-			v128 data = get_const_vector(cv, m_pos, 4000);
-
 			if (is_spu_float_zero(data))
 			{
 				return c;
@@ -7835,9 +7979,8 @@ public:
 			value_t<s32[4]> a = get_vr<s32[4]>(op.ra);
 			value_t<f64[4]> r;
 
-			if (auto ca = llvm::dyn_cast<llvm::Constant>(a.value))
+			if (auto [ok, data] = get_const_vector(a.value, m_pos, 25971); ok)
 			{
-				v128 data = get_const_vector(ca, m_pos, 25971);
 				r.value = build<f64[4]>(data._s32[0], data._s32[1], data._s32[2], data._s32[3]).eval(m_ir);
 			}
 			else
@@ -7876,9 +8019,8 @@ public:
 			value_t<s32[4]> a = get_vr<s32[4]>(op.ra);
 			value_t<f64[4]> r;
 
-			if (auto ca = llvm::dyn_cast<llvm::Constant>(a.value))
+			if (auto [ok, data] = get_const_vector(a.value, m_pos, 20971); ok)
 			{
-				v128 data = get_const_vector(ca, m_pos, 20971);
 				r.value = build<f64[4]>(data._u32[0], data._u32[1], data._u32[2], data._u32[3]).eval(m_ir);
 			}
 			else
@@ -7912,7 +8054,7 @@ public:
 
 	void make_store_ls(value_t<u64> addr, value_t<u8[16]> data)
 	{
-		const auto bswapped = zshuffle(data, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+		const auto bswapped = byteswap(data);
 		m_ir->CreateStore(bswapped.eval(m_ir), m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, addr.value), get_type<u8(*)[16]>()), true);
 	}
 
@@ -7920,7 +8062,7 @@ public:
 	{
 		value_t<u8[16]> data;
 		data.value = m_ir->CreateLoad(m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, addr.value), get_type<u8(*)[16]>()), true);
-		return zshuffle(data, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+		return byteswap(data);
 	}
 
 	void STQX(spu_opcode_t op)
@@ -7930,9 +8072,8 @@ public:
 
 		for (auto pair : std::initializer_list<std::pair<value_t<u32[4]>, value_t<u32[4]>>>{{a, b}, {b, a}})
 		{
-			if (auto cv = llvm::dyn_cast<llvm::Constant>(pair.first.value))
+			if (auto [ok, data] = get_const_vector(pair.first.value, m_pos, 10000); ok)
 			{
-				v128 data = get_const_vector(cv, m_pos, 10000);
 				data._u32[3] %= SPU_LS_SIZE;
 
 				if (data._u32[3] % 0x10 == 0)
@@ -7955,9 +8096,8 @@ public:
 
 		for (auto pair : std::initializer_list<std::pair<value_t<u32[4]>, value_t<u32[4]>>>{{a, b}, {b, a}})
 		{
-			if (auto cv = llvm::dyn_cast<llvm::Constant>(pair.first.value))
+			if (auto [ok, data] = get_const_vector(pair.first.value, m_pos, 10000); ok)
 			{
-				v128 data = get_const_vector(cv, m_pos, 10000);
 				data._u32[3] %= SPU_LS_SIZE;
 
 				if (data._u32[3] % 0x10 == 0)
