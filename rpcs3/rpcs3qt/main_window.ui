@@ -141,7 +141,7 @@
      <x>0</x>
      <y>0</y>
      <width>1058</width>
-     <height>22</height>
+     <height>26</height>
     </rect>
    </property>
    <property name="contextMenuPolicy">
@@ -222,6 +222,9 @@
     <addaction name="confAudioAct"/>
     <addaction name="confIOAct"/>
     <addaction name="confSystemAct"/>
+    <addaction name="confAdvAct"/>
+    <addaction name="confEmuAct"/>
+    <addaction name="confGuiAct"/>
     <addaction name="separator"/>
     <addaction name="confAutopauseManagerAct"/>
    </widget>
@@ -392,7 +395,7 @@
   </action>
   <action name="bootInstallPkgAct">
    <property name="text">
-    <string>Install .pkg</string>
+    <string>Install Packages/Raps</string>
    </property>
    <property name="toolTip">
     <string>Install application from a .pkg file</string>
@@ -501,6 +504,30 @@
    </property>
    <property name="toolTip">
     <string>Configure system</string>
+   </property>
+  </action>
+  <action name="confAdvAct">
+   <property name="text">
+    <string>Advanced</string>
+   </property>
+   <property name="toolTip">
+    <string>Configure advanced emulator settings</string>
+   </property>
+  </action>
+  <action name="confEmuAct">
+   <property name="text">
+    <string>Emulator</string>
+   </property>
+   <property name="toolTip">
+    <string>Configure Emulator settings</string>
+   </property>
+  </action>
+  <action name="confGuiAct">
+   <property name="text">
+    <string>GUI</string>
+   </property>
+   <property name="toolTip">
+    <string>Configure GUI settings</string>
    </property>
   </action>
   <action name="confAutopauseManagerAct">
