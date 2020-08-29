@@ -79,6 +79,11 @@ atomic_t<u32> g_progr_fdone{0};
 atomic_t<u32> g_progr_ptotal{0};
 atomic_t<u32> g_progr_pdone{0};
 
+namespace
+{
+	struct progress_dialog_server;
+}
+
 template<>
 void fmt_class_string<game_boot_result>::format(std::string& out, u64 arg)
 {
@@ -117,6 +122,7 @@ void Emulator::Init()
 
 	idm::init();
 	g_fxo->reset();
+	g_fxo->init<named_thread<progress_dialog_server>>();
 
 	// Reset defaults, cache them
 	g_cfg.from_default();
@@ -760,8 +766,8 @@ std::string Emulator::GetSfoDirFromGamePath(const std::string& game_path, const 
 
 				if (entry.is_directory && fs::is_file(sfo_path))
 				{
-					const auto psf           = psf::load_object(fs::file(sfo_path));
-					const std::string serial = get_string(psf, "TITLE_ID");
+					const auto psf = psf::load_object(fs::file(sfo_path));
+					const auto serial = psf::get_string(psf, "TITLE_ID");
 					if (serial == title_id)
 					{
 						return game_path + "/" + entry.name;
@@ -775,8 +781,9 @@ std::string Emulator::GetSfoDirFromGamePath(const std::string& game_path, const 
 
 	const auto psf = psf::load_object(fs::file(game_path + "/PARAM.SFO"));
 
-	const std::string category   = get_string(psf, "CATEGORY");
-	const std::string content_id = get_string(psf, "CONTENT_ID");
+	const auto category = psf::get_string(psf, "CATEGORY");
+	const auto content_id = std::string(psf::get_string(psf, "CONTENT_ID"));
+
 	if (category == "HG" && !content_id.empty())
 	{
 		// This is a trial game. Check if the user has a RAP file to unlock it.
@@ -912,12 +919,12 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			_psf = psf::load_object(fs::file(m_sfo_dir + "/PARAM.SFO"));
 		}
 
-		m_title = psf::get_string(_psf, "TITLE", m_path.substr(m_path.find_last_of('/') + 1));
-		m_title_id = psf::get_string(_psf, "TITLE_ID");
-		m_cat = psf::get_string(_psf, "CATEGORY");
+		m_title = std::string(psf::get_string(_psf, "TITLE", std::string_view(m_path).substr(m_path.find_last_of('/') + 1)));
+		m_title_id = std::string(psf::get_string(_psf, "TITLE_ID"));
+		m_cat = std::string(psf::get_string(_psf, "CATEGORY"));
 
-		m_app_version = psf::get_string(_psf, "APP_VER", "Unknown");
-		const std::string version_disc = psf::get_string(_psf, "VERSION", "Unknown");
+		m_app_version = std::string(psf::get_string(_psf, "APP_VER", "Unknown"));
+		const auto version_disc = psf::get_string(_psf, "VERSION", "Unknown");
 
 		if (!_psf.empty() && m_cat.empty())
 		{
@@ -1271,7 +1278,8 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				return game_boot_result::invalid_file_or_folder;
 			}
 
-			const std::string bdvd_title_id = psf::get_string(psf::load_object(fs::file{vfs::get("/dev_bdvd/PS3_GAME/PARAM.SFO")}), "TITLE_ID");
+			const auto game_psf = psf::load_object(fs::file{vfs::get("/dev_bdvd/PS3_GAME/PARAM.SFO")});
+			const auto bdvd_title_id = psf::get_string(game_psf, "TITLE_ID");
 
 			if (bdvd_title_id != m_title_id)
 			{
@@ -1440,7 +1448,8 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 
 		if (!disc_sfo_dir.empty() && fs::is_file(disc_sfo_dir))
 		{
-			const std::string bdvd_title = psf::get_string(psf::load_object(fs::file{ disc_sfo_dir }), "TITLE");
+			const auto psf_obj = psf::load_object(fs::file{ disc_sfo_dir });
+			const auto bdvd_title = psf::get_string(psf_obj, "TITLE");
 
 			if (!bdvd_title.empty() && bdvd_title != m_title)
 			{
@@ -2010,5 +2019,3 @@ void stx::manual_fixed_typemap<void>::destroy_reporter(const char* name, unsigne
 }
 
 Emulator Emu;
-
-named_thread<progress_dialog_server> g_progress_dlg_server;

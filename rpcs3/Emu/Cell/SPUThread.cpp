@@ -1775,6 +1775,10 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 	{
 		const u32 result = spu_putlluc_tx(addr, to_write.data(), this);
 
+		const auto render = result != 1 ? get_rsx_if_needs_res_pause(addr) : nullptr;
+
+		if (render) render->pause();
+
 		if (result == 2)
 		{
 			cpu_thread::suspend_all cpu_lock(this);
@@ -1809,6 +1813,7 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 			vm::reservation_acquire(addr, 128) += 64;
 		}
 
+		if (render) render->unpause();
 		static_cast<void>(test_stopped());
 	}
 	else
@@ -2121,6 +2126,10 @@ bool spu_thread::process_mfc_cmd()
 				{
 				case 2:
 				{
+					const auto render = get_rsx_if_needs_res_pause(addr);
+
+					if (render) render->pause();
+
 					cpu_thread::suspend_all cpu_lock(this);
 
 					// Give up if PUTLLUC happened
@@ -2132,11 +2141,13 @@ bool spu_thread::process_mfc_cmd()
 						{
 							mov_rdata(data, to_write);
 							res += 127;
+							if (render) render->unpause();
 							return true;
 						}
 					}
 
 					res -= 1;
+					if (render) render->unpause();
 					return false;
 				}
 				case 1: return true;
@@ -2335,7 +2346,7 @@ bool spu_thread::process_mfc_cmd()
 		ch_mfc_cmd.cmd, ch_mfc_cmd.lsa, ch_mfc_cmd.eal, ch_mfc_cmd.tag, ch_mfc_cmd.size);
 }
 
-u32 spu_thread::get_events(bool waiting)
+u32 spu_thread::get_events(u32 mask_hint, bool waiting)
 {
 	const u32 mask1 = ch_event_mask;
 
@@ -2345,18 +2356,24 @@ u32 spu_thread::get_events(bool waiting)
 	}
 
 	// Check reservation status and set SPU_EVENT_LR if lost
-	if (raddr && ((vm::reservation_acquire(raddr, sizeof(rdata)) & -128) != rtime || !cmp_rdata(rdata, vm::_ref<decltype(rdata)>(raddr))))
+	if (mask_hint & SPU_EVENT_LR && raddr && ((vm::reservation_acquire(raddr, sizeof(rdata)) & -128) != rtime || !cmp_rdata(rdata, vm::_ref<decltype(rdata)>(raddr))))
 	{
 		ch_event_stat |= SPU_EVENT_LR;
 		raddr = 0;
 	}
 
-	// SPU Decrementer Event
-	if (!ch_dec_value || (ch_dec_value - (get_timebased_time() - ch_dec_start_timestamp)) >> 31)
+	// SPU Decrementer Event on underflow (use the upper 32-bits to determine it)
+	if (mask_hint & SPU_EVENT_TM)
 	{
-		if ((ch_event_stat & SPU_EVENT_TM) == 0)
+		if (const u64 res = (ch_dec_value - (get_timebased_time() - ch_dec_start_timestamp)) >> 32)
 		{
-			ch_event_stat |= SPU_EVENT_TM;
+			// Set next event to the next time the decrementer underflows
+			ch_dec_start_timestamp -= res << 32;
+
+			if ((ch_event_stat & SPU_EVENT_TM) == 0)
+			{
+				ch_event_stat |= SPU_EVENT_TM;
+			}
 		}
 	}
 
@@ -2566,7 +2583,9 @@ s64 spu_thread::get_ch_value(u32 ch)
 
 	case SPU_RdEventStat:
 	{
-		u32 res = get_events();
+		const u32 mask1 = ch_event_mask;
+
+		u32 res = get_events(mask1);
 
 		if (res)
 		{
@@ -2574,8 +2593,6 @@ s64 spu_thread::get_ch_value(u32 ch)
 		}
 
 		spu_function_logger logger(*this, "MFC Events read");
-
-		const u32 mask1 = ch_event_mask;
 
 		if (mask1 & SPU_EVENT_LR && raddr)
 		{
@@ -2585,7 +2602,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 				fmt::throw_exception("Not supported: event mask 0x%x" HERE, mask1);
 			}
 
-			while (res = get_events(), !res)
+			while (res = get_events(mask1), !res)
 			{
 				state += cpu_flag::wait;
 
@@ -2601,7 +2618,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 			return res;
 		}
 
-		while (res = get_events(true), !res)
+		while (res = get_events(mask1, true), !res)
 		{
 			state += cpu_flag::wait;
 
@@ -2914,6 +2931,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 	case SPU_WrDec:
 	{
+		get_events(SPU_EVENT_TM); // Don't discard possibly occured old event
 		ch_dec_start_timestamp = get_timebased_time();
 		ch_dec_value = value;
 		return true;
@@ -2927,6 +2945,8 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 	case SPU_WrEventAck:
 	{
+		// "Collect" events before final acknowledgment
+		get_events(value);
 		ch_event_stat &= ~value;
 		return true;
 	}
