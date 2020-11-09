@@ -16,10 +16,10 @@
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_prx.h"
 #include "Emu/Cell/lv2/sys_rsx.h"
+#include "Emu/Cell/Modules/cellMsgDialog.h"
 
 #include "Emu/title.h"
 #include "Emu/IdManager.h"
-#include "Emu/RSX/GSRender.h"
 #include "Emu/RSX/Capture/rsx_replay.h"
 
 #include "Loader/PSF.h"
@@ -55,7 +55,9 @@ LOG_CHANNEL(sys_log, "SYS");
 
 stx::manual_fixed_typemap<void> g_fixed_typemap;
 
-bool g_use_rtm;
+bool g_use_rtm = false;
+u64 g_rtm_tx_limit1 = 0;
+u64 g_rtm_tx_limit2 = 0;
 
 std::string g_cfg_defaults;
 
@@ -451,9 +453,17 @@ const bool Emulator::SetUsr(const std::string& user)
 
 const std::string Emulator::GetBackgroundPicturePath() const
 {
-	std::string path = m_sfo_dir + "/PIC1.PNG";
+	// Try to find a custom icon first
+	std::string path = fs::get_config_dir() + "/Icons/game_icons/" + Emu.GetTitleID() + "/PIC1.PNG";
 
-	if (!fs::exists(path))
+	if (fs::is_file(path))
+	{
+		return path;
+	}
+
+	path = m_sfo_dir + "/PIC1.PNG";
+
+	if (!fs::is_file(path))
 	{
 		const std::string disc_dir = vfs::get("/dev_bdvd/PS3_GAME");
 
@@ -467,12 +477,12 @@ const std::string Emulator::GetBackgroundPicturePath() const
 			// Fallback to PIC1.PNG in disc dir
 			path = disc_dir + "/PIC1.PNG";
 
-			if (!fs::exists(path))
+			if (!fs::is_file(path))
 			{
 				// Fallback to ICON0.PNG in update dir
 				path = m_sfo_dir + "/ICON0.PNG";
 
-				if (!fs::exists(path))
+				if (!fs::is_file(path))
 				{
 					// Fallback to ICON0.PNG in disc dir
 					path = disc_dir + "/ICON0.PNG";
@@ -1009,6 +1019,14 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			{
 				sys_log.warning("TSX forced by User");
 			}
+		}
+
+		if (g_use_rtm)
+		{
+			// Update supplementary settings
+			const f64 _1ns = utils::get_tsc_freq() / 1000'000'000.;
+			g_rtm_tx_limit1 = g_cfg.core.tx_limit1_ns * _1ns;
+			g_rtm_tx_limit2 = g_cfg.core.tx_limit2_ns * _1ns;
 		}
 
 		// Load patches from different locations
@@ -1685,6 +1703,12 @@ void Emulator::Run(bool start_playtime)
 		cpu.notify();
 	});
 
+	if (auto thr = g_fxo->get<named_thread<rsx::rsx_replay_thread>>())
+	{
+		thr->state -= cpu_flag::stop;
+		thread_ctrl::notify(*thr);
+	}
+
 	if (g_cfg.misc.prevent_display_sleep)
 	{
 		disable_display_sleep();
@@ -1740,8 +1764,8 @@ void Emulator::Resume()
 	// Print and reset debug data collected
 	if (m_state == system_state::paused && g_cfg.core.ppu_debug)
 	{
-		PPUDisAsm dis_asm(CPUDisAsm_InterpreterMode);
-		dis_asm.offset = vm::g_base_addr;
+		PPUDisAsm dis_asm(CPUDisAsm_DumpMode);
+		dis_asm.offset = vm::g_sudo_addr;
 
 		std::string dump;
 

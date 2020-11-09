@@ -1433,9 +1433,6 @@
         <layout class="QHBoxLayout" name="systemTabLayout2" stretch="1,1,1">
          <item>
           <widget class="QGroupBox" name="gb_console_region">
-           <property name="enabled">
-            <bool>false</bool>
-           </property>
            <property name="title">
             <string>Console Region</string>
            </property>
@@ -3517,6 +3514,13 @@
              <widget class="QCheckBox" name="hookStFunc">
               <property name="text">
                <string>Hook static functions</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QCheckBox" name="perfReport">
+              <property name="text">
+               <string>Enable Performance Report</string>
               </property>
              </widget>
             </item>

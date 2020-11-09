@@ -4,6 +4,7 @@
 #include "Utilities/Config.h"
 
 enum CellNetCtlState : s32;
+enum CellSysutilLicenseArea : s32;
 enum CellSysutilLang : s32;
 enum CellKbMappingType : s32;
 
@@ -53,7 +54,7 @@ struct cfg_root : cfg::node
 		cfg::_bool spu_accurate_xfloat{ this, "Accurate xfloat", false };
 		cfg::_bool spu_approx_xfloat{ this, "Approximate xfloat", true };
 		cfg::_bool llvm_accurate_dfma{ this, "LLVM Accurate DFMA", true }; // Enable accurate double-precision FMA for CPUs which do not support it natively
-		cfg::_bool llvm_ppu_jm_handling{ this, "PPU LLVM Java Mode Handling", false }; // Respect current Java Mode for alti-vec ops by PPU LLVM 
+		cfg::_bool llvm_ppu_jm_handling{ this, "PPU LLVM Java Mode Handling", false }; // Respect current Java Mode for alti-vec ops by PPU LLVM
 		cfg::_int<-1, 14> ppu_128_reservations_loop_max_length{ this, "Accurate PPU 128-byte Reservation Op Max Length", 0, true }; // -1: Always accurate, 0: Never accurate, 1-14: max accurate loop length
 		cfg::_bool llvm_ppu_accurate_vector_nan{ this, "PPU LLVM Accurate Vector NaN values", false };
 		cfg::_int<-64, 64> stub_ppu_traps{ this, "Stub PPU Traps", 0, true }; // Hack, skip PPU traps for rare cases where the trap is continueable (specify relative instructions to skip)
@@ -65,6 +66,8 @@ struct cfg_root : cfg::node
 		cfg::_bool hle_lwmutex{ this, "HLE lwmutex" }; // Force alternative lwmutex/lwcond implementation
 		cfg::uint64 spu_llvm_lower_bound{ this, "SPU LLVM Lower Bound" };
 		cfg::uint64 spu_llvm_upper_bound{ this, "SPU LLVM Upper Bound", 0xffffffffffffffff };
+		cfg::uint64 tx_limit1_ns{this, "TSX Transaction First Limit", 800}; // In nanoseconds
+		cfg::uint64 tx_limit2_ns{this, "TSX Transaction Second Limit", 2000}; // In nanoseconds
 
 		cfg::_int<10, 3000> clocks_scale{ this, "Clocks scale", 100, true }; // Changing this from 100 (percentage) may affect game speed in unexpected ways
 		cfg::_enum<sleep_timers_accuracy_level> sleep_timers_accuracy{ this, "Sleep Timers Accuracy",
@@ -73,6 +76,9 @@ struct cfg_root : cfg::node
 #else
 			sleep_timers_accuracy_level::_usleep, true };
 #endif
+
+		cfg::uint64 perf_report_threshold{this, "Performance Report Threshold", 500, true}; // In µs, 0.5ms = default, 0 = everything
+		cfg::_bool perf_report{this, "Enable Performance Report", false, true}; // Show certain perf-related logs
 	} core{ this };
 
 	struct node_vfs : cfg::node
@@ -248,6 +254,7 @@ struct cfg_root : cfg::node
 	{
 		node_sys(cfg::node* _this) : cfg::node(_this, "System") {}
 
+		cfg::_enum<CellSysutilLicenseArea> license_area{ this, "License Area", CellSysutilLicenseArea{1} }; // CELL_SYSUTIL_LICENSE_AREA_A
 		cfg::_enum<CellSysutilLang> language{ this, "Language", CellSysutilLang{1} }; // CELL_SYSUTIL_LANG_ENGLISH_US
 		cfg::_enum<CellKbMappingType> keyboard_type{ this, "Keyboard Type", CellKbMappingType{0} }; // CELL_KB_MAPPING_101 = US
 		cfg::_enum<enter_button_assign> enter_button_assignment{ this, "Enter button assignment", enter_button_assign::cross };

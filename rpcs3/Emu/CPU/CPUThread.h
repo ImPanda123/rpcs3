@@ -11,6 +11,7 @@ enum class cpu_flag : u32
 	stop, // Thread not running (HLE, initial state)
 	exit, // Irreversible exit
 	wait, // Indicates waiting state, set by the thread itself
+	temp, // Indicates that the thread cannot properly return after next check_state()
 	pause, // Thread suspended by suspend_all technique
 	suspend, // Thread suspended
 	ret, // Callback return requested
@@ -72,6 +73,11 @@ public:
 		return !!(state & (cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause));
 	}
 
+	bool has_pause_flag() const
+	{
+		return !!(state & cpu_flag::pause);
+	}
+
 	// Check thread type
 	u32 id_type() const
 	{
@@ -91,7 +97,7 @@ public:
 	std::string get_name() const;
 
 	// Get CPU state dump (everything)
-	virtual std::string dump_all() const = 0;
+	virtual std::string dump_all() const;
 
 	// Get CPU register dump
 	virtual std::string dump_regs() const;
@@ -111,18 +117,19 @@ public:
 	// Callback for cpu_flag::suspend
 	virtual void cpu_sleep() {}
 
-	// Callback for cpu_flag::memory
-	virtual void cpu_mem() {}
-
-	// Callback for vm::temporary_unlock
-	virtual void cpu_unmem() {}
-
 	// Callback for cpu_flag::ret
 	virtual void cpu_return() {}
 
 	// For internal use
 	struct suspend_work
 	{
+		// Task priority
+		s8 prio;
+
+		// Size of prefetch list workload
+		u32 prf_size;
+		void* const* prf_list;
+
 		void* func_ptr;
 		void* res_buf;
 
@@ -133,16 +140,16 @@ public:
 		suspend_work* next;
 
 		// Internal method
-		void push(cpu_thread* _this) noexcept;
+		bool push(cpu_thread* _this, bool cancel_if_not_suspended = false) noexcept;
 	};
 
 	// Suspend all threads and execute op (may be executed by other thread than caller!)
-	template <typename F>
-	static auto suspend_all(cpu_thread* _this, F op)
+	template <s8 Prio = 0, typename F>
+	static auto suspend_all(cpu_thread* _this, std::initializer_list<void*> hints, F op)
 	{
 		if constexpr (std::is_void_v<std::invoke_result_t<F>>)
 		{
-			suspend_work work{&op, nullptr, [](void* func, void*)
+			suspend_work work{Prio, ::size32(hints), hints.begin(), &op, nullptr, [](void* func, void*)
 			{
 				std::invoke(*static_cast<F*>(func));
 			}};
@@ -154,13 +161,28 @@ public:
 		{
 			std::invoke_result_t<F> result;
 
-			suspend_work work{&op, &result, [](void* func, void* res_buf)
+			suspend_work work{Prio, ::size32(hints), hints.begin(), &op, &result, [](void* func, void* res_buf)
 			{
 				*static_cast<std::invoke_result_t<F>*>(res_buf) = std::invoke(*static_cast<F*>(func));
 			}};
 
 			work.push(_this);
 			return result;
+		}
+	}
+
+	// Push the workload only if threads are being suspended by suspend_all()
+	template <s8 Prio = 0, typename F>
+	static bool if_suspended(cpu_thread* _this, std::initializer_list<void*> hints, F op)
+	{
+		static_assert(std::is_void_v<std::invoke_result_t<F>>, "Unimplemented (must return void)");
+		{
+			suspend_work work{Prio, ::size32(hints), hints.begin(), &op, nullptr, [](void* func, void*)
+			{
+				std::invoke(*static_cast<F*>(func));
+			}};
+
+			return work.push(_this, true);
 		}
 	}
 
