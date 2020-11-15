@@ -476,7 +476,6 @@ const auto spu_putllc_tx = build_function_asm<u64(*)(u32 raddr, u64 rtime, void*
 		c.jae(fall);
 	});
 	c.bt(x86::dword_ptr(args[2], ::offset32(&spu_thread::state) - ::offset32(&spu_thread::rdata)), static_cast<u32>(cpu_flag::pause));
-	c.mov(x86::eax, _XABORT_EXPLICIT);
 	c.jc(fall);
 	c.xbegin(tx0);
 	c.mov(x86::rax, x86::qword_ptr(x86::rbx));
@@ -576,17 +575,9 @@ const auto spu_putllc_tx = build_function_asm<u64(*)(u32 raddr, u64 rtime, void*
 	c.xend();
 	c.add(x86::qword_ptr(args[2], ::offset32(&spu_thread::stx) - ::offset32(&spu_thread::rdata)), 1);
 	build_get_tsc(c, stamp1);
-	c.mov(x86::eax, _XABORT_EXPLICIT);
 	//c.jmp(fall);
 
 	c.bind(fall);
-
-	// Touch memory if transaction failed with status 0
-	c.test(x86::eax, x86::eax);
-	c.jnz(next);
-	c.xor_(x86::rbp, 0xf80);
-	c.lock().add(x86::dword_ptr(x86::rbp), 0);
-	c.xor_(x86::rbp, 0xf80);
 
 	Label fall2 = c.newLabel();
 	Label fail2 = c.newLabel();
@@ -900,17 +891,9 @@ const auto spu_putlluc_tx = build_function_asm<u64(*)(u32 raddr, const void* rda
 	c.xend();
 	c.add(x86::qword_ptr(args[2], ::offset32(&spu_thread::stx)), 1);
 	build_get_tsc(c, stamp1);
-	c.mov(x86::eax, _XABORT_EXPLICIT);
 	//c.jmp(fall);
 
 	c.bind(fall);
-
-	// Touch memory if transaction failed with status 0
-	c.test(x86::eax, x86::eax);
-	c.jnz(next);
-	c.xor_(x86::rbp, 0xf80);
-	c.lock().add(x86::dword_ptr(x86::rbp), 0);
-	c.xor_(x86::rbp, 0xf80);
 
 	Label fall2 = c.newLabel();
 
@@ -1211,9 +1194,79 @@ std::string spu_thread::dump_regs() const
 {
 	std::string ret;
 
-	for (u32 i = 0; i < 128; i++)
+	const bool floats_only = debugger_float_mode.load();
+
+	for (u32 i = 0; i < 128; i++, ret += '\n')
 	{
-		fmt::append(ret, "r%d: %s\n", i, gpr[i]);
+		fmt::append(ret, "%s: ", spu_reg_name[i]);
+
+		const auto r = gpr[i];
+
+		if (auto [size, dst, src] = SPUDisAsm::try_get_insert_mask_info(r); size)
+		{
+			// Special: insertion masks
+
+			const std::string_view type =
+				size == 1 ? "byte" :
+				size == 2 ? "half" :
+				size == 4 ? "word" :
+				size == 8 ? "dword" : "error";
+
+			if ((size >= 4u && !src) || (size == 2u && src == 1u) || (size == 1u && src == 3u))
+			{
+				fmt::append(ret, "insert -> %s[%u]", type, dst);
+				continue;
+			}
+		}
+
+		auto to_f64 = [](u32 bits)
+		{
+			const u32 abs = bits & 0x7fff'ffff;
+			constexpr u32 scale = (1 << 23);
+			return std::copysign(abs < scale ? 0 : std::ldexp((scale + (abs % scale)) / f64{scale}, static_cast<int>(abs >> 23) - 127), bits >> 31 ? -1 : 1);
+		};
+
+		const double array[]{to_f64(r.u32r[0]), to_f64(r.u32r[1]), to_f64(r.u32r[2]), to_f64(r.u32r[3])};
+
+		const u32 i3 = r._u32[3];
+		const bool is_packed = v128::from32p(i3) == r;
+
+		if (floats_only)
+		{
+			fmt::append(ret, "%g, %g, %g, %g", array[0], array[1], array[2], array[3]);
+			continue;
+		}
+
+		if (is_packed)
+		{
+			// Shortand formatting
+			fmt::append(ret, "%08x", i3);
+		}
+		else
+		{
+			fmt::append(ret, "%08x %08x %08x %08x", r.u32r[0], r.u32r[1], r.u32r[2], r.u32r[3]);
+		}
+
+		if (i3 >= 0x80 && is_exec_code(i3))
+		{
+			SPUDisAsm dis_asm(CPUDisAsm_NormalMode);
+			dis_asm.offset = ls;
+			dis_asm.dump_pc = i3;
+			dis_asm.disasm(i3);
+			fmt::append(ret, " -> %s", dis_asm.last_opcode);
+		}
+
+		if (std::any_of(std::begin(array), std::end(array), [](f64 v){ return v != 0; }))
+		{
+			if (is_packed)
+			{
+				fmt::append(ret, " (%g)", array[0]);
+			}
+			else
+			{
+				fmt::append(ret, " (%g, %g, %g, %g)", array[0], array[1], array[2], array[3]);
+			}
+		}
 	}
 
 	const auto events = ch_events.load();
@@ -1281,8 +1334,7 @@ std::vector<std::pair<u32, u32>> spu_thread::dump_callstack_list() const
 				return true;
 			}
 
-			const u32 op = _ref<u32>(addr);
-			return s_spu_itype.decode(op) == spu_itype::UNK || !op || !addr;
+			return !addr || !is_exec_code(addr);
 		};
 
 		if (is_invalid(lr))
@@ -2013,18 +2065,22 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				{
 					if (_cpu->state & cpu_flag::pause)
 					{
-						cpu_thread::if_suspended(_cpu, {dst, dst + 64, &res}, [&]
+						const bool ok = cpu_thread::if_suspended<0>(_cpu, {dst, dst + 64, &res}, [&]
 						{
 							std::memcpy(dst, src, size0);
 							res += 128;
 						});
 
-						// Exit loop and function
-						i = -1;
-						bits = nullptr;
-						return;
+						if (ok)
+						{
+							// Exit loop and function
+							i = -1;
+							bits = nullptr;
+							return;
+						}
 					}
-					else if (++i < 10)
+
+					if (++i < 10)
 					{
 						busy_wait(500);
 					}
@@ -2545,7 +2601,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			{
 				auto& data = *vm::get_super_ptr<spu_rdata_t>(addr);
 
-				const bool ok = cpu_thread::suspend_all<+1>(this, {data, data + 64, &res}, [&]()
+				const bool ok = cpu_thread::suspend_all<+3>(this, {data, data + 64, &res}, [&]()
 				{
 					if ((res & -128) == rtime)
 					{
@@ -2562,6 +2618,13 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 					res -= 1;
 					return false;
 				});
+
+				const u64 count2 = __rdtsc() - perf2.get();
+
+				if (count2 > 20000 && g_cfg.core.perf_report) [[unlikely]]
+				{
+					perf_log.warning(u8"PUTLLC: took too long: %.3fµs (%u c) (addr=0x%x) (S)", count2 / (utils::get_tsc_freq() / 1000'000.), count2, addr);
+				}
 
 				if (ok)
 				{
@@ -2595,7 +2658,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			{
 				if (count > 20000 && g_cfg.core.perf_report) [[unlikely]]
 				{
-					perf_log.warning(u8"PUTLLC: took too long: %.3fµs (%u c)", count / (utils::get_tsc_freq() / 1000'000.), count);
+					perf_log.warning(u8"PUTLLC: took too long: %.3fµs (%u c) (addr = 0x%x)", count / (utils::get_tsc_freq() / 1000'000.), count, addr);
 				}
 
 				break;
@@ -2671,7 +2734,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			}
 		}
 
-		if (!vm::check_addr(addr, 1, vm::page_writable))
+		if (!vm::check_addr(addr, vm::page_writable))
 		{
 			vm::_ref<atomic_t<u8>>(addr) += 0; // Access violate
 		}
@@ -2691,22 +2754,28 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 
 	if (g_use_rtm) [[likely]]
 	{
-		const u64 result = spu_putlluc_tx(addr, to_write, cpu);
+		u64 result = spu_putlluc_tx(addr, to_write, cpu);
 
 		if (result == 0)
 		{
 			auto& sdata = *vm::get_super_ptr<spu_rdata_t>(addr);
 			auto& res = vm::reservation_acquire(addr, 128);
 
-			cpu_thread::suspend_all<0>(cpu, {&res}, [&]
+			cpu_thread::suspend_all<+2>(cpu, {&res}, [&]
 			{
 				mov_rdata_nt(sdata, *static_cast<const spu_rdata_t*>(to_write));
 				res += 127;
 			});
 		}
-		else if (result > 20000 && g_cfg.core.perf_report) [[unlikely]]
+
+		if (!result)
 		{
-			perf_log.warning(u8"STORE128: took too long: %.3fµs (%u c)", result / (utils::get_tsc_freq() / 1000'000.), result);
+			result = __rdtsc() - perf0.get();
+		}
+
+		if (result > 20000 && g_cfg.core.perf_report) [[unlikely]]
+		{
+			perf_log.warning(u8"STORE128: took too long: %.3fµs (%u c) (addr=0x%x)", result / (utils::get_tsc_freq() / 1000'000.), result, addr);
 		}
 
 		static_cast<void>(cpu->test_stopped());
@@ -2876,6 +2945,34 @@ bool spu_thread::check_mfc_interrupts(u32 next_pc)
 	return false;
 }
 
+bool spu_thread::is_exec_code(u32 addr) const
+{
+	if (addr & ~0x3FFFC)
+	{
+		return false;
+	}
+
+	for (u32 i = 0; i < 30; i++)
+	{
+		const u32 addr0 = addr + (i * 4);
+		const u32 op = _ref<u32>(addr0);
+		const auto type = s_spu_itype.decode(op);
+
+		if (type == spu_itype::UNK || !op)
+		{
+			return false;
+		}
+
+		if (type & spu_itype::branch)
+		{
+			// TODO
+			break;
+		}
+	}
+
+	return true;
+}
+
 u32 spu_thread::get_mfc_completed()
 {
 	return ch_tag_mask & ~mfc_fence;
@@ -2958,18 +3055,17 @@ bool spu_thread::process_mfc_cmd()
 			{
 				auto& sdata = *vm::get_super_ptr<spu_rdata_t>(addr);
 
-				verify(HERE), cpu_thread::if_suspended<-1>(this, {}, [&]
+				const bool ok = cpu_thread::if_suspended<0>(this, {&ntime}, [&]
 				{
 					// Guaranteed success
 					ntime = vm::reservation_acquire(addr, 128);
 					mov_rdata_nt(rdata, sdata);
 				});
 
-				_mm_mfence();
-
 				// Exit loop
-				if ((ntime & 127) == 0)
+				if (ok && (ntime & 127) == 0)
 				{
+					_mm_mfence();
 					i = -1;
 					return;
 				}
@@ -3241,7 +3337,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data)
 			if ((lock_val >> vm::range_pos) == (vm::range_locked >> vm::range_pos))
 			{
 				// All page flags are untouched and can be read safely
-				if (!vm::check_addr(addr, 128))
+				if (!vm::check_addr(addr))
 				{
 					// Assume our memory is being (de)allocated
 					range_lock->release(0);
@@ -3272,7 +3368,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data)
 		if (lock_addr + lock_size <= addr || lock_addr >= addr + 128)
 		{
 			// We are outside locked range, so page flags are unaffected
-			if (!vm::check_addr(addr, 128))
+			if (!vm::check_addr(addr))
 			{
 				range_lock->release(0);
 				break;
@@ -4330,8 +4426,12 @@ bool spu_thread::stop_and_signal(u32 code)
 						return true;
 					});
 
-					if (thread.get() != this)
-						thread_ctrl::raw_notify(*thread);
+					while (thread.get() != this && thread->state & cpu_flag::wait)
+					{
+						// TODO: replace with proper solution
+						if (atomic_wait_engine::raw_notify(nullptr, thread_ctrl::get_native_id(*thread)))
+							break;
+					}
 				}
 			}
 
