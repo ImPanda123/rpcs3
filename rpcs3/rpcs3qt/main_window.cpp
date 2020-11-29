@@ -2227,6 +2227,10 @@ void main_window::closeEvent(QCloseEvent* closeEvent)
 	}
 
 	// Cleanly stop and quit the emulator.
+	if (!Emu.IsStopped())
+	{
+		Emu.Stop();
+	}
 	Emu.Quit(true);
 }
 

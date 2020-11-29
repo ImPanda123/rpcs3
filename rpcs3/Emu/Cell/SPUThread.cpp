@@ -1384,6 +1384,8 @@ std::string spu_thread::dump_misc() const
 		fmt::append(ret, "...chunk-0x%05x", (name & 0xffff) * 4);
 	}
 
+	const u32 offset = group ? SPU_FAKE_BASE_ADDR + (id & 0xffffff) * SPU_LS_SIZE : RAW_SPU_BASE_ADDR + index * RAW_SPU_OFFSET;
+
 	fmt::append(ret, "\n[%s]", ch_mfc_cmd);
 	fmt::append(ret, "\nLocal Storage: 0x%08x..0x%08x", offset, offset + 0x3ffff);
 
@@ -1570,7 +1572,7 @@ void spu_thread::cpu_task()
 	{
 		const auto cpu = static_cast<spu_thread*>(get_current_cpu_thread());
 
-		static thread_local stx::shared_cptr<std::string> name_cache;
+		static thread_local shared_ptr<std::string> name_cache;
 
 		if (!cpu->spu_tname.is_equal(name_cache)) [[unlikely]]
 		{
@@ -1624,16 +1626,19 @@ void spu_thread::cpu_task()
 spu_thread::~spu_thread()
 {
 	{
-		const auto [_, shm] = vm::get(vm::any, offset)->get(offset);
+		vm::writer_lock(0);
 
 		for (s32 i = -1; i < 2; i++)
 		{
 			// Unmap LS mirrors
 			shm->unmap_critical(ls + (i * SPU_LS_SIZE));
 		}
+	}
 
-		// Deallocate Local Storage
-		vm::dealloc_verbose_nothrow(offset);
+	if (!group)
+	{
+		// Deallocate local storage (thread groups are handled in sys_spu.cpp)
+		vm::dealloc_verbose_nothrow(RAW_SPU_BASE_ADDR + RAW_SPU_OFFSET * index, vm::spu);
 	}
 
 	// Release LS mirrors area
@@ -1653,13 +1658,25 @@ spu_thread::~spu_thread()
 	perf_log.notice("Perf stats for PUTLLC reload: successs %u, failure %u", last_succ, last_fail);
 }
 
-spu_thread::spu_thread(vm::addr_t _ls, lv2_spu_group* group, u32 index, std::string_view name, u32 lv2_id, bool is_isolated, u32 option)
+spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u32 lv2_id, bool is_isolated, u32 option)
 	: cpu_thread(idm::last_id())
 	, index(index)
+	, shm(std::make_shared<utils::shm>(SPU_LS_SIZE))
 	, ls([&]()
 	{
-		const auto [_, shm] = vm::get(vm::any, _ls)->get(_ls);
 		const auto addr = static_cast<u8*>(utils::memory_reserve(SPU_LS_SIZE * 5));
+
+		if (!group)
+		{
+			verify(HERE), vm::get(vm::spu)->falloc(RAW_SPU_BASE_ADDR + RAW_SPU_OFFSET * index, SPU_LS_SIZE, &shm);
+		}
+		else
+		{
+			// 0x1000 indicates falloc to allocate page with no access rights in base memory
+			verify(HERE), vm::get(vm::spu)->falloc(SPU_FAKE_BASE_ADDR + SPU_LS_SIZE * (cpu_thread::id & 0xffffff), SPU_LS_SIZE, &shm, 0x1000);
+		}
+
+		vm::writer_lock(0);
 
 		for (u32 i = 1; i < 4; i++)
 		{
@@ -1672,11 +1689,10 @@ spu_thread::spu_thread(vm::addr_t _ls, lv2_spu_group* group, u32 index, std::str
 		return addr + (SPU_LS_SIZE * 2);
 	}())
 	, thread_type(group ? spu_type::threaded : is_isolated ? spu_type::isolated : spu_type::raw)
-	, offset(_ls)
 	, group(group)
 	, option(option)
 	, lv2_id(lv2_id)
-	, spu_tname(stx::shared_cptr<std::string>::make(name))
+	, spu_tname(make_single<std::string>(name))
 {
 	if (g_cfg.core.spu_decoder == spu_decoder_type::asmjit)
 	{
@@ -1795,6 +1811,23 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 	u32 eal = args.eal;
 	u32 lsa = args.lsa & 0x3ffff;
 
+	// Keep src point to const
+	u8* dst = nullptr;
+	const u8* src = nullptr;
+
+	std::tie(dst, src) = [&]() -> std::pair<u8*, const u8*>
+	{
+		u8* dst = vm::_ptr<u8>(eal);
+		u8* src = ls + lsa;
+
+		if (is_get)
+		{
+			std::swap(src, dst);
+		}
+
+		return {dst, src};
+	}();
+
 	// SPU Thread Group MMIO (LS and SNR) and RawSPU MMIO
 	if (_this && eal >= RAW_SPU_BASE_ADDR)
 	{
@@ -1835,9 +1868,13 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 		{
 			auto& spu = static_cast<spu_thread&>(*_this->group->threads[_this->group->threads_map[index]]);
 
-			if (offset + args.size - 1 < SPU_LS_SIZE) // LS access
+			if (offset + args.size <= SPU_LS_SIZE) // LS access
 			{
-				eal = spu.offset + offset; // redirect access
+				// redirect access
+				if (auto ptr = spu.ls + offset; is_get)
+					src = ptr;
+				else
+					dst = ptr;
 			}
 			else if (!is_get && args.size == 4 && (offset == SYS_SPU_THREAD_SNR1 || offset == SYS_SPU_THREAD_SNR2))
 			{
@@ -1855,28 +1892,11 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 		}
 	}
 
-	// Keep src point to const
-	u8* dst = nullptr;
-	const u8* src = nullptr;
-
 	// Cleanup: if PUT or GET happens after PUTLLC failure, it's too complicated and it's easier to just give up
 	if (_this)
 	{
 		_this->last_faddr = 0;
 	}
-
-	std::tie(dst, src) = [&]() -> std::pair<u8*, const u8*>
-	{
-		u8* dst = vm::_ptr<u8>(eal);
-		u8* src = ls + lsa;
-
-		if (is_get)
-		{
-			std::swap(src, dst);
-		}
-
-		return {dst, src};
-	}();
 
 	// It is so rare that optimizations are not implemented (TODO)
 	alignas(64) static constexpr u8 zero_buf[0x10000]{};
@@ -1912,7 +1932,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 			range_lock = _this->range_lock;
 		}
 
-		_m_prefetchw(range_lock);
+		utils::prefetch_write(range_lock);
 
 		for (u32 size = args.size, size0; is_get; size -= size0, dst += size0, src += size0, eal += size0)
 		{
@@ -2647,8 +2667,8 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 					return false;
 				}
 
-				_m_prefetchw(rdata);
-				_m_prefetchw(rdata + 64);
+				utils::prefetch_read(rdata);
+				utils::prefetch_read(rdata + 64);
 				last_faddr = addr;
 				last_ftime = res.load() & -128;
 				last_ftsc = __rdtsc();
@@ -3868,14 +3888,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 			}
 			else
 			{
-				if (ch_out_mbox.get_count())
-				{
-					fmt::throw_exception("SPU_WrOutIntrMbox: unknown data (value=0x%x); Out_MBox = 0x%x" HERE, value, ch_out_mbox.get_value());
-				}
-				else
-				{
-					fmt::throw_exception("SPU_WrOutIntrMbox: unknown data (value=0x%x)" HERE, value);
-				}
+				fmt::throw_exception("SPU_WrOutIntrMbox: unknown data (value=0x%x, Out_MBox=%s)" HERE, value, ch_out_mbox);
 			}
 		}
 	}
@@ -4451,12 +4464,13 @@ bool spu_thread::stop_and_signal(u32 code)
 
 		state += cpu_flag::wait;
 
-		if (!ch_out_mbox.get_count())
+		u32 value;
+
+		if (!ch_out_mbox.try_pop(value))
 		{
 			fmt::throw_exception("sys_spu_thread_exit(): Out_MBox is empty" HERE);
 		}
 
-		const u32 value = ch_out_mbox.get_value();
 		spu_log.trace("sys_spu_thread_exit(status=0x%x)", value);
 		last_exit_status.release(value);
 		set_status_npc();
@@ -4466,7 +4480,7 @@ bool spu_thread::stop_and_signal(u32 code)
 	}
 	}
 
-	fmt::throw_exception("Unknown STOP code: 0x%x (Out_MBox=%s)" HERE, code, ch_out_mbox);
+	fmt::throw_exception("Unknown STOP code: 0x%x (op=0x%x, Out_MBox=%s)" HERE, code, _ref<u32>(pc), ch_out_mbox);
 }
 
 void spu_thread::halt()

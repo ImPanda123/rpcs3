@@ -289,8 +289,8 @@ namespace vm
 			return;
 		}
 
-		// Limit to 256 MiB at once; make sure if it operates on big amount of data, it's page-aligned
-		if (size > 256 * 1024 * 1024 || (size > 65536 && size % 4096))
+		// Limit to <512 MiB at once; make sure if it operates on big amount of data, it's page-aligned
+		if (size >= 512 * 1024 * 1024 || (size > 65536 && size % 4096))
 		{
 			fmt::throw_exception("Failed to lock range (flags=0x%x, addr=0x%x, size=0x%x)" HERE, flags >> 32, addr, size);
 		}
@@ -733,11 +733,17 @@ namespace vm
 			rsxthr->on_notify_memory_mapped(addr, size);
 		}
 
+		auto prot = utils::protection::rw;
+		if (~flags & page_writable)
+			prot = utils::protection::ro;
+		if (~flags & page_readable)
+			prot = utils::protection::no;
+
 		if (!shm)
 		{
-			utils::memory_protect(g_base_addr + addr, size, utils::protection::rw);
+			utils::memory_protect(g_base_addr + addr, size, prot);
 		}
-		else if (shm->map_critical(g_base_addr + addr) != g_base_addr + addr || shm->map_critical(g_sudo_addr + addr) != g_sudo_addr + addr)
+		else if (shm->map_critical(g_base_addr + addr, prot) != g_base_addr + addr || shm->map_critical(g_sudo_addr + addr) != g_sudo_addr + addr)
 		{
 			fmt::throw_exception("Memory mapping failed - blame Windows (addr=0x%x, size=0x%x, flags=0x%x)", addr, size, flags);
 		}
@@ -763,18 +769,6 @@ namespace vm
 
 		// Unlock
 		g_range_lock.release(0);
-
-		perf_meter<"PAGE_LCK"_u64> perf1;
-
-		if (!g_use_rtm)
-		{
-			perf1.reset();
-		}
-		else if (!utils::memory_lock(g_sudo_addr + addr, size))
-		{
-			vm_log.error("Failed to lock memory. Consider increasing your system limits.\n"
-				"addr=0x%x, size=0x%x, shm=%d, shm:[f=%d,l=%u]", addr, size, +!!shm, shm ? shm->flags() : 0, shm ? shm->info : 0);
-		}
 	}
 
 	bool page_protect(u32 addr, u32 size, u8 flags_test, u8 flags_set, u8 flags_clear)
@@ -833,8 +827,6 @@ namespace vm
 						safe_bits |= range_readable;
 					if (old_val & start_value & page_writable && safe_bits & range_readable)
 						safe_bits |= range_writable;
-					if (old_val & start_value & page_executable && safe_bits & range_readable)
-						safe_bits |= range_executable;
 
 					// Protect range locks from observing changes in memory protection
 					_lock_main_range_lock(safe_bits, start * 4096, page_size);
@@ -1009,7 +1001,7 @@ namespace vm
 			fmt::throw_exception("Invalid memory location (%u)" HERE, +location);
 		}
 
-		return block->alloc(size, align);
+		return block->alloc(size, nullptr, align);
 	}
 
 	u32 falloc(u32 addr, u32 size, memory_location_t location)
@@ -1050,6 +1042,19 @@ namespace vm
 		{
 			vm_log.error("vm::dealloc(): deallocation failed (addr=0x%x)\n", addr);
 			return;
+		}
+	}
+
+	void lock_sudo(u32 addr, u32 size)
+	{
+		perf_meter<"PAGE_LCK"_u64> perf;
+
+		verify("lock_sudo" HERE), addr % 4096 == 0;
+		verify("lock_sudo" HERE), size % 4096 == 0;
+
+		if (!utils::memory_lock(g_sudo_addr + addr, size))
+		{
+			vm_log.error("Failed to lock sudo memory (addr=0x%x, size=0x%x). Consider increasing your system limits.", addr, size);
 		}
 	}
 
@@ -1097,6 +1102,28 @@ namespace vm
 			return result;
 		});
 
+		// Fill stack guards with STACKGRD
+		if (this->flags & 0x10)
+		{
+			auto fill64 = [](u8* ptr, u64 data, std::size_t count)
+			{
+				u64* target = reinterpret_cast<u64*>(ptr);
+
+#ifdef _MSC_VER
+				__stosq(target, data, count);
+#else
+				__asm__ ("mov %0, %%rdi; mov %1, %%rax; mov %2, %%rcx; rep stosq;"
+					:
+					: "r" (ptr), "r" (data), "r" (count)
+					: "rdi", "rax", "rcx", "memory");
+#endif
+			};
+
+			const u32 enda = addr + size - 4096;
+			fill64(g_sudo_addr + addr, "STACKGRD"_u64, 4096 / sizeof(u64));
+			fill64(g_sudo_addr + enda, "UNDERFLO"_u64, 4096 / sizeof(u64));
+		}
+
 		// Add entry
 		m_map[addr] = std::make_pair(size, std::move(shm));
 
@@ -1108,12 +1135,13 @@ namespace vm
 		, size(size)
 		, flags(flags)
 	{
-		if (flags & 0x100)
+		if (flags & 0x100 || flags & 0x20)
 		{
-			// Special path for 4k-aligned pages
+			// Special path for whole-allocated areas allowing 4k granularity
 			m_common = std::make_shared<utils::shm>(size);
-			verify(HERE), m_common->map_critical(vm::base(addr), utils::protection::no) == vm::base(addr);
-			verify(HERE), m_common->map_critical(vm::get_super_ptr(addr)) == vm::get_super_ptr(addr);
+			m_common->map_critical(vm::base(addr), utils::protection::no);
+			m_common->map_critical(vm::get_super_ptr(addr));
+			lock_sudo(addr, size);
 		}
 	}
 
@@ -1131,7 +1159,6 @@ namespace vm
 				it = next;
 			}
 
-			// Special path for 4k-aligned pages
 			if (m_common)
 			{
 				m_common->unmap_critical(vm::base(addr));
@@ -1140,15 +1167,13 @@ namespace vm
 		}
 	}
 
-	u32 block_t::alloc(const u32 orig_size, u32 align, const std::shared_ptr<utils::shm>* src, u64 flags)
+	u32 block_t::alloc(const u32 orig_size, const std::shared_ptr<utils::shm>* src, u32 align, u64 flags)
 	{
 		if (!src)
 		{
 			// Use the block's flags
 			flags = this->flags;
 		}
-
-		vm::writer_lock lock(0);
 
 		// Determine minimal alignment
 		const u32 min_page_size = flags & 0x100 ? 0x1000 : 0x10000;
@@ -1168,7 +1193,7 @@ namespace vm
 			return 0;
 		}
 
-		u8 pflags = page_readable | page_writable;
+		u8 pflags = flags & 0x1000 ? 0 : page_readable | page_writable;
 
 		if ((flags & SYS_MEMORY_PAGE_SIZE_64K) == SYS_MEMORY_PAGE_SIZE_64K)
 		{
@@ -1187,7 +1212,11 @@ namespace vm
 		else if (src)
 			shm = *src;
 		else
+		{
 			shm = std::make_shared<utils::shm>(size);
+		}
+
+		vm::writer_lock lock(0);
 
 		// Search for an appropriate place (unoptimized)
 		for (u32 addr = ::align(this->addr, align); u64{addr} + size <= u64{this->addr} + this->size; addr += align)
@@ -1209,8 +1238,6 @@ namespace vm
 			flags = this->flags;
 		}
 
-		vm::writer_lock lock(0);
-
 		// Determine minimal alignment
 		const u32 min_page_size = flags & 0x100 ? 0x1000 : 0x10000;
 
@@ -1223,7 +1250,7 @@ namespace vm
 			return 0;
 		}
 
-		u8 pflags = page_readable | page_writable;
+		u8 pflags = flags & 0x1000 ? 0 : page_readable | page_writable;
 
 		if ((flags & SYS_MEMORY_PAGE_SIZE_64K) == SYS_MEMORY_PAGE_SIZE_64K)
 		{
@@ -1242,7 +1269,11 @@ namespace vm
 		else if (src)
 			shm = *src;
 		else
+		{
 			shm = std::make_shared<utils::shm>(size);
+		}
+
+		vm::writer_lock lock(0);
 
 		if (!try_alloc(addr, pflags, size, std::move(shm)))
 		{
@@ -1282,6 +1313,13 @@ namespace vm
 			// Unmap "real" memory pages
 			verify(HERE), size == _page_unmap(addr, size, found->second.second.get());
 
+			// Clear stack guards
+			if (flags & 0x10)
+			{
+				std::memset(g_sudo_addr + addr - 4096, 0, 4096);
+				std::memset(g_sudo_addr + addr + size, 0, 4096);
+			}
+
 			// Remove entry
 			m_map.erase(found);
 
@@ -1289,7 +1327,7 @@ namespace vm
 		}
 	}
 
-	std::pair<u32, std::shared_ptr<utils::shm>> block_t::get(u32 addr, u32 size)
+	std::pair<u32, std::shared_ptr<utils::shm>> block_t::peek(u32 addr, u32 size)
 	{
 		if (addr < this->addr || addr + u64{size} > this->addr + u64{this->size})
 		{
@@ -1313,10 +1351,10 @@ namespace vm
 			return {addr, nullptr};
 		}
 
-		// Special path
+		// Special case
 		if (m_common)
 		{
-			return {this->addr, m_common};
+			return {addr, nullptr};
 		}
 
 		// Range check
@@ -1602,12 +1640,12 @@ namespace vm
 
 			g_locations =
 			{
-				std::make_shared<block_t>(0x00010000, 0x1FFF0000, 0x200), // main
+				std::make_shared<block_t>(0x00010000, 0x1FFF0000, 0x220), // main
 				std::make_shared<block_t>(0x20000000, 0x10000000, 0x201), // user 64k pages
 				nullptr, // user 1m pages
 				nullptr, // rsx context
-				std::make_shared<block_t>(0xC0000000, 0x10000000), // video
-				std::make_shared<block_t>(0xD0000000, 0x10000000, 0x111), // stack
+				std::make_shared<block_t>(0xC0000000, 0x10000000, 0x220), // video
+				std::make_shared<block_t>(0xD0000000, 0x10000000, 0x131), // stack
 				std::make_shared<block_t>(0xE0000000, 0x20000000), // SPU reserved
 			};
 
