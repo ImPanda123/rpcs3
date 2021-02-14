@@ -134,6 +134,12 @@
     <Filter Include="Gui\network">
       <UniqueIdentifier>{bad5498c-a915-4a96-b0cc-f754c02d8e65}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Io\DualSense">
+      <UniqueIdentifier>{ff7eb8a7-5545-41af-bab1-348032b9a430}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Gui\custom items">
+      <UniqueIdentifier>{949cff6d-9cc5-4a8a-a453-a5144da8ecf4}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -309,30 +315,6 @@
     </ClCompile>
     <ClCompile Include="Input\basic_keyboard_handler.cpp">
       <Filter>Io\Basic</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Release - LLVM\moc_basic_keyboard_handler.cpp">
-      <Filter>Generated Files\Release - LLVM</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Debug\moc_basic_keyboard_handler.cpp">
-      <Filter>Generated Files\Debug</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Release\moc_basic_keyboard_handler.cpp">
-      <Filter>Generated Files\Release</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Debug - LLVM\moc_basic_keyboard_handler.cpp">
-      <Filter>Generated Files\Debug - LLVM</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Release - LLVM\moc_basic_mouse_handler.cpp">
-      <Filter>Generated Files\Release - LLVM</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Debug\moc_basic_mouse_handler.cpp">
-      <Filter>Generated Files\Debug</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Release\moc_basic_mouse_handler.cpp">
-      <Filter>Generated Files\Release</Filter>
-    </ClCompile>
-    <ClCompile Include="QTGeneratedFiles\Debug - LLVM\moc_basic_mouse_handler.cpp">
-      <Filter>Generated Files\Debug - LLVM</Filter>
     </ClCompile>
     <ClCompile Include="Input\basic_mouse_handler.cpp">
       <Filter>Io\Basic</Filter>
@@ -1102,6 +1084,27 @@
     <ClCompile Include="QTGeneratedFiles\Debug - LLVM\moc_localized_emu.cpp">
       <Filter>Generated Files\Debug - LLVM</Filter>
     </ClCompile>
+    <ClCompile Include="Input\dualsense_pad_handler.cpp">
+      <Filter>Io\DualSense</Filter>
+    </ClCompile>
+    <ClCompile Include="rpcs3qt\custom_table_widget_item.cpp">
+      <Filter>Gui\custom items</Filter>
+    </ClCompile>
+    <ClCompile Include="rpcs3qt\log_viewer.cpp">
+      <Filter>Gui\log</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Release - LLVM\moc_log_viewer.cpp">
+      <Filter>Generated Files\Release - LLVM</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Debug\moc_log_viewer.cpp">
+      <Filter>Generated Files\Debug</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Release\moc_log_viewer.cpp">
+      <Filter>Generated Files\Release</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Debug - LLVM\moc_log_viewer.cpp">
+      <Filter>Generated Files\Debug - LLVM</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Input\ds4_pad_handler.h">
@@ -1146,14 +1149,8 @@
     <ClInclude Include="rpcs3qt\game_list_grid_delegate.h">
       <Filter>Gui\game list</Filter>
     </ClInclude>
-    <ClInclude Include="rpcs3qt\table_item_delegate.h">
-      <Filter>Gui\game list</Filter>
-    </ClInclude>
     <ClInclude Include="Input\evdev_joystick_handler.h">
       <Filter>Io\evdev</Filter>
-    </ClInclude>
-    <ClInclude Include="rpcs3qt\custom_table_widget_item.h">
-      <Filter>Gui\game list</Filter>
     </ClInclude>
     <ClInclude Include="rpcs3qt\qt_utils.h">
       <Filter>Gui\utils</Filter>
@@ -1203,6 +1200,36 @@
     <ClInclude Include="rpcs3qt\curl_handle.h">
       <Filter>Gui\network</Filter>
     </ClInclude>
+    <ClInclude Include="Input\dualsense_pad_handler.h">
+      <Filter>Io\DualSense</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\custom_table_widget_item.h">
+      <Filter>Gui\custom items</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\table_item_delegate.h">
+      <Filter>Gui\custom items</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\richtext_item_delegate.h">
+      <Filter>Gui\custom items</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\numbered_widget_item.h">
+      <Filter>Gui\custom items</Filter>
+    </ClInclude>
+    <ClInclude Include="Input\basic_keyboard_handler.h">
+      <Filter>Io\Basic</Filter>
+    </ClInclude>
+    <ClInclude Include="Input\basic_mouse_handler.h">
+      <Filter>Io\Basic</Filter>
+    </ClInclude>
+    <ClInclude Include="main_application.h">
+      <Filter>rpcs3</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\breakpoint_handler.h">
+      <Filter>Gui\debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\progress_dialog.h">
+      <Filter>Gui\misc dialogs</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="debug\moc_predefs.h.cbt">
@@ -1210,12 +1237,6 @@
     </CustomBuild>
     <CustomBuild Include="release\moc_predefs.h.cbt">
       <Filter>Generated Files</Filter>
-    </CustomBuild>
-    <CustomBuild Include="Input\basic_keyboard_handler.h">
-      <Filter>Io\Basic</Filter>
-    </CustomBuild>
-    <CustomBuild Include="Input\basic_mouse_handler.h">
-      <Filter>Io\Basic</Filter>
     </CustomBuild>
     <ClInclude Include="resource.h">
       <Filter>Resource Files</Filter>
@@ -1316,9 +1337,6 @@
     <CustomBuild Include="rpcs3qt\save_manager_dialog.h">
       <Filter>Gui\save</Filter>
     </CustomBuild>
-    <CustomBuild Include="rpcs3qt\progress_dialog.h">
-      <Filter>Gui\misc dialogs</Filter>
-    </CustomBuild>
     <CustomBuild Include="rpcs3qt\game_compatibility.h">
       <Filter>Gui\game list</Filter>
     </CustomBuild>
@@ -1329,9 +1347,6 @@
       <Filter>Gui\user accounts</Filter>
     </CustomBuild>
     <CustomBuild Include="rpcs3qt\debugger_list.h">
-      <Filter>Gui\debugger</Filter>
-    </CustomBuild>
-    <CustomBuild Include="rpcs3qt\breakpoint_handler.h">
       <Filter>Gui\debugger</Filter>
     </CustomBuild>
     <CustomBuild Include="rpcs3qt\breakpoint_list.h">
@@ -1357,9 +1372,6 @@
     </CustomBuild>
     <CustomBuild Include="rpcs3qt\gui_application.h">
       <Filter>Gui</Filter>
-    </CustomBuild>
-    <CustomBuild Include="main_application.h">
-      <Filter>rpcs3</Filter>
     </CustomBuild>
     <CustomBuild Include="headless_application.h">
       <Filter>rpcs3</Filter>
@@ -1430,11 +1442,28 @@
     <CustomBuild Include="rpcs3qt\localized_emu.h">
       <Filter>Gui\settings</Filter>
     </CustomBuild>
+    <CustomBuild Include="rpcs3qt\log_viewer.h">
+      <Filter>Gui\log</Filter>
+    </CustomBuild>
   </ItemGroup>
   <ItemGroup>
     <Image Include="rpcs3.ico" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="rpcs3.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="QTGeneratedFiles\Release - LLVM\pkg_install_dialog.moc">
+      <Filter>Generated Files\Release - LLVM</Filter>
+    </None>
+    <None Include="QTGeneratedFiles\Debug\pkg_install_dialog.moc">
+      <Filter>Generated Files\Debug</Filter>
+    </None>
+    <None Include="QTGeneratedFiles\Release\pkg_install_dialog.moc">
+      <Filter>Generated Files\Release</Filter>
+    </None>
+    <None Include="QTGeneratedFiles\Debug - LLVM\pkg_install_dialog.moc">
+      <Filter>Generated Files\Debug - LLVM</Filter>
+    </None>
   </ItemGroup>
 </Project>

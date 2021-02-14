@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "../RSXTexture.h"
 #include "Utilities/span.h"
@@ -69,6 +69,8 @@ namespace rsx
 		rsx::texture_dimension_extended image_type = texture_dimension_extended::texture_dimension_2d;
 		rsx::format_class format_class = RSX_FORMAT_CLASS_UNDEFINED;
 		bool is_cyclic_reference = false;
+		u32 ref_address = 0;
+		u64 surface_cache_tag = 0;
 		f32 scale_x = 1.f;
 		f32 scale_y = 1.f;
 
@@ -110,12 +112,22 @@ namespace rsx
 		u32 pitch_in_block;
 	};
 
+	struct memory_transfer_cmd
+	{
+		const void* dst;
+		const void* src;
+		u32 length;
+	};
+
 	struct texture_memory_info
 	{
 		int element_size;
 		int block_length;
 		bool require_swap;
 		bool require_deswizzle;
+		bool require_upload;
+
+		std::vector<memory_transfer_cmd> deferred_cmds;
 	};
 
 	struct texture_uploader_capabilities
@@ -123,16 +135,17 @@ namespace rsx
 		bool supports_byteswap;
 		bool supports_vtc_decoding;
 		bool supports_hw_deswizzle;
-		size_t alignment;
+		bool supports_zero_copy;
+		usz alignment;
 	};
 
 	/**
 	* Get size to store texture in a linear fashion.
 	* Storage is assumed to use a rowPitchAlignment boundary for every row of texture.
 	*/
-	size_t get_placed_texture_storage_size(u16 width, u16 height, u32 depth, u8 format, u16 mipmap, bool cubemap, size_t row_pitch_alignment, size_t mipmap_alignment);
-	size_t get_placed_texture_storage_size(const rsx::fragment_texture &texture, size_t row_pitch_alignment, size_t mipmap_alignment = 0x200);
-	size_t get_placed_texture_storage_size(const rsx::vertex_texture &texture, size_t row_pitch_alignment, size_t mipmap_alignment = 0x200);
+	usz get_placed_texture_storage_size(u16 width, u16 height, u32 depth, u8 format, u16 mipmap, bool cubemap, usz row_pitch_alignment, usz mipmap_alignment);
+	usz get_placed_texture_storage_size(const rsx::fragment_texture &texture, usz row_pitch_alignment, usz mipmap_alignment = 0x200);
+	usz get_placed_texture_storage_size(const rsx::vertex_texture &texture, usz row_pitch_alignment, usz mipmap_alignment = 0x200);
 
 	/**
 	 * get all rsx::subresource_layout for texture.
@@ -141,7 +154,7 @@ namespace rsx
 	std::vector<subresource_layout> get_subresources_layout(const rsx::fragment_texture &texture);
 	std::vector<subresource_layout> get_subresources_layout(const rsx::vertex_texture &texture);
 
-	texture_memory_info upload_texture_subresource(gsl::span<std::byte> dst_buffer, const subresource_layout &src_layout, int format, bool is_swizzled, const texture_uploader_capabilities& caps);
+	texture_memory_info upload_texture_subresource(gsl::span<std::byte> dst_buffer, const subresource_layout &src_layout, int format, bool is_swizzled, texture_uploader_capabilities& caps);
 
 	u8 get_format_block_size_in_bytes(int format);
 	u8 get_format_block_size_in_texel(int format);
@@ -160,8 +173,8 @@ namespace rsx
 	/**
 	* Get number of bytes occupied by texture in RSX mem
 	*/
-	size_t get_texture_size(const rsx::fragment_texture &texture);
-	size_t get_texture_size(const rsx::vertex_texture &texture);
+	usz get_texture_size(const rsx::fragment_texture &texture);
+	usz get_texture_size(const rsx::vertex_texture &texture);
 
 	/**
 	* Get packed pitch

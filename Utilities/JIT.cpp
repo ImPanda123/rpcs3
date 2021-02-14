@@ -1,11 +1,13 @@
-﻿#include "types.h"
+#include "util/types.hpp"
+#include "util/sysinfo.hpp"
 #include "JIT.h"
 #include "StrFmt.h"
 #include "File.h"
 #include "util/logs.hpp"
 #include "mutex.h"
-#include "sysinfo.h"
 #include "util/vm.hpp"
+#include "util/asm.hpp"
+#include <charconv>
 #include <immintrin.h>
 #include <zlib.h>
 
@@ -36,7 +38,7 @@ static atomic_t<u64> s_code_pos{0}, s_data_pos{0};
 static std::vector<u8> s_code_init, s_data_init;
 
 template <atomic_t<u64>& Ctr, uint Off, utils::protection Prot>
-static u8* add_jit_memory(std::size_t size, uint align)
+static u8* add_jit_memory(usz size, uint align)
 {
 	// Select subrange
 	u8* pointer = get_jit_memory() + Off;
@@ -52,8 +54,8 @@ static u8* add_jit_memory(std::size_t size, uint align)
 	// Simple allocation by incrementing pointer to the next free data
 	const u64 pos = Ctr.atomic_op([&](u64& ctr) -> u64
 	{
-		const u64 _pos = ::align(ctr & 0xffff'ffff, align);
-		const u64 _new = ::align(_pos + size, align);
+		const u64 _pos = utils::align(ctr & 0xffff'ffff, align);
+		const u64 _new = utils::align(_pos + size, align);
 
 		if (_new > 0x40000000) [[unlikely]]
 		{
@@ -69,7 +71,7 @@ static u8* add_jit_memory(std::size_t size, uint align)
 		// Check the necessity to commit more memory
 		if (_new > olda) [[unlikely]]
 		{
-			newa = ::align(_new, 0x200000);
+			newa = utils::align(_new, 0x200000);
 		}
 
 		ctr += _new - (ctr & 0xffff'ffff);
@@ -78,7 +80,7 @@ static u8* add_jit_memory(std::size_t size, uint align)
 
 	if (pos == umax) [[unlikely]]
 	{
-		jit_log.error("JIT: Out of memory (size=0x%x, align=0x%x, off=0x%x)", size, align, Off);
+		jit_log.error("Out of memory (size=0x%x, align=0x%x, off=0x%x)", size, align, Off);
 		return nullptr;
 	}
 
@@ -112,7 +114,7 @@ jit_runtime::~jit_runtime()
 
 asmjit::Error jit_runtime::_add(void** dst, asmjit::CodeHolder* code) noexcept
 {
-	std::size_t codeSize = code->getCodeSize();
+	usz codeSize = code->getCodeSize();
 	if (!codeSize) [[unlikely]]
 	{
 		*dst = nullptr;
@@ -126,7 +128,7 @@ asmjit::Error jit_runtime::_add(void** dst, asmjit::CodeHolder* code) noexcept
 		return asmjit::kErrorNoVirtualMemory;
 	}
 
-	std::size_t relocSize = code->relocate(p);
+	usz relocSize = code->relocate(p);
 	if (!relocSize) [[unlikely]]
 	{
 		*dst = nullptr;
@@ -144,7 +146,7 @@ asmjit::Error jit_runtime::_release(void* ptr) noexcept
 	return asmjit::kErrorOk;
 }
 
-u8* jit_runtime::alloc(std::size_t size, uint align, bool exec) noexcept
+u8* jit_runtime::alloc(usz size, uint align, bool exec) noexcept
 {
 	if (exec)
 	{
@@ -216,28 +218,29 @@ asmjit::Runtime& asmjit::get_global_runtime()
 
 		asmjit::Error _add(void** dst, asmjit::CodeHolder* code) noexcept override
 		{
-			std::size_t codeSize = code->getCodeSize();
+			usz codeSize = code->getCodeSize();
 			if (!codeSize) [[unlikely]]
 			{
 				*dst = nullptr;
 				return asmjit::kErrorNoCodeGenerated;
 			}
 
-			void* p = m_pos.fetch_add(::align(codeSize, 4096));
+			void* p = m_pos.fetch_add(utils::align(codeSize, 4096));
 			if (!p || m_pos > m_max) [[unlikely]]
 			{
 				*dst = nullptr;
+				jit_log.fatal("Out of memory (static asmjit)");
 				return asmjit::kErrorNoVirtualMemory;
 			}
 
-			std::size_t relocSize = code->relocate(p);
+			usz relocSize = code->relocate(p);
 			if (!relocSize) [[unlikely]]
 			{
 				*dst = nullptr;
 				return asmjit::kErrorInvalidState;
 			}
 
-			utils::memory_protect(p, ::align(codeSize, 4096), utils::protection::rx);
+			utils::memory_protect(p, utils::align(codeSize, 4096), utils::protection::rx);
 			flush(p, relocSize);
 			*dst = p;
 
@@ -304,6 +307,66 @@ const bool jit_initialize = []() -> bool
 	return true;
 }();
 
+[[noreturn]] static void null(const char* name)
+{
+	fmt::throw_exception("Null function: %s", name);
+}
+
+namespace vm
+{
+	extern u8* const g_sudo_addr;
+}
+
+static shared_mutex null_mtx;
+
+static std::unordered_map<std::string, u64> null_funcs;
+
+static u64 make_null_function(const std::string& name)
+{
+	if (name.starts_with("__0x"))
+	{
+		u32 addr = -1;
+		auto res = std::from_chars(name.c_str() + 4, name.c_str() + name.size(), addr, 16);
+
+		if (res.ec == std::errc() && res.ptr == name.c_str() + name.size() && addr < 0x8000'0000)
+		{
+			// Point the garbage to reserved, non-executable memory
+			return reinterpret_cast<u64>(vm::g_sudo_addr + addr);
+		}
+	}
+
+	std::lock_guard lock(null_mtx);
+
+	if (u64& func_ptr = null_funcs[name]) [[likely]]
+	{
+		// Already exists
+		return func_ptr;
+	}
+	else
+	{
+		using namespace asmjit;
+
+		// Build a "null" function that contains its name
+		const auto func = build_function_asm<void (*)()>([&](X86Assembler& c, auto& args)
+		{
+			Label data = c.newLabel();
+			c.lea(args[0], x86::qword_ptr(data, 0));
+			c.jmp(imm_ptr(&null));
+			c.align(kAlignCode, 16);
+			c.bind(data);
+
+			// Copy function name bytes
+			for (char ch : name)
+				c.db(ch);
+			c.db(0);
+			c.align(kAlignData, 16);
+		});
+
+		func_ptr = reinterpret_cast<u64>(func);
+		return func_ptr;
+	}
+}
+
 // Simple memory manager
 struct MemoryManager1 : llvm::RTDyldMemoryManager
 {
@@ -326,45 +389,45 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 		utils::memory_release(ptr, c_max_size * 2);
 	}
 
-	[[noreturn]] static void null()
-	{
-		fmt::throw_exception("Null function" HERE);
-	}
-
 	llvm::JITSymbol findSymbol(const std::string& name) override
 	{
 		u64 addr = RTDyldMemoryManager::getSymbolAddress(name);
 
 		if (!addr)
 		{
-			addr = reinterpret_cast<uptr>(&null);
+			addr = make_null_function(name);
+
+			if (!addr)
+			{
+				fmt::throw_exception("Failed to link '%s'", name);
+			}
 		}
 
 		return {addr, llvm::JITSymbolFlags::Exported};
 	}
 
-	u8* allocate(u64& oldp, std::uintptr_t size, uint align, utils::protection prot)
+	u8* allocate(u64& oldp, uptr size, uint align, utils::protection prot)
 	{
 		if (align > c_page_size)
 		{
-			jit_log.fatal("JIT: Unsupported alignment (size=0x%x, align=0x%x)", size, align);
+			jit_log.fatal("Unsupported alignment (size=0x%x, align=0x%x)", size, align);
 			return nullptr;
 		}
 
-		const u64 olda = ::align(oldp, align);
-		const u64 newp = ::align(olda + size, align);
+		const u64 olda = utils::align(oldp, align);
+		const u64 newp = utils::align(olda + size, align);
 
 		if ((newp - 1) / c_max_size != oldp / c_max_size)
 		{
-			jit_log.fatal("JIT: Out of memory (size=0x%x, align=0x%x)", size, align);
+			jit_log.fatal("Out of memory (size=0x%x, align=0x%x)", size, align);
 			return nullptr;
 		}
 
 		if ((oldp - 1) / c_page_size != (newp - 1) / c_page_size)
 		{
 			// Allocate pages on demand
-			const u64 pagea = ::align(oldp, c_page_size);
-			const u64 psize = ::align(newp - pagea, c_page_size);
+			const u64 pagea = utils::align(oldp, c_page_size);
+			const u64 psize = utils::align(newp - pagea, c_page_size);
 			utils::memory_commit(this->ptr + pagea, psize, prot);
 		}
 
@@ -374,12 +437,12 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 		return this->ptr + olda;
 	}
 
-	u8* allocateCodeSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name) override
+	u8* allocateCodeSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name) override
 	{
 		return allocate(code_ptr, size, align, utils::protection::wx);
 	}
 
-	u8* allocateDataSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
+	u8* allocateDataSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
 	{
 		return allocate(data_ptr, size, align, utils::protection::rw);
 	}
@@ -389,7 +452,7 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 		return false;
 	}
 
-	void registerEHFrames(u8* addr, u64 load_addr, std::size_t size) override
+	void registerEHFrames(u8* addr, u64 load_addr, usz size) override
 	{
 	}
 
@@ -407,12 +470,29 @@ struct MemoryManager2 : llvm::RTDyldMemoryManager
 	{
 	}
 
-	u8* allocateCodeSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name) override
+	llvm::JITSymbol findSymbol(const std::string& name) override
+	{
+		u64 addr = RTDyldMemoryManager::getSymbolAddress(name);
+
+		if (!addr)
+		{
+			addr = make_null_function(name);
+
+			if (!addr)
+			{
+				fmt::throw_exception("Failed to link '%s' (MM2)", name);
+			}
+		}
+
+		return {addr, llvm::JITSymbolFlags::Exported};
+	}
+
+	u8* allocateCodeSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name) override
 	{
 		return jit_runtime::alloc(size, align, true);
 	}
 
-	u8* allocateDataSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
+	u8* allocateDataSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
 	{
 		return jit_runtime::alloc(size, align, false);
 	}
@@ -422,7 +502,7 @@ struct MemoryManager2 : llvm::RTDyldMemoryManager
 		return false;
 	}
 
-	void registerEHFrames(u8* addr, u64 load_addr, std::size_t size) override
+	void registerEHFrames(u8* addr, u64 load_addr, usz size) override
 	{
 	}
 
@@ -452,7 +532,7 @@ public:
 		name.append(".gz");
 
 		z_stream zs{};
-		uLong zsz = compressBound(::narrow<u32>(obj.getBufferSize(), HERE)) + 256;
+		uLong zsz = compressBound(::narrow<u32>(obj.getBufferSize())) + 256;
 		auto zbuf = std::make_unique<uchar[]>(zsz);
 #ifndef _MSC_VER
 #pragma GCC diagnostic push
@@ -677,7 +757,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 
 		for (auto&& [name, addr] : _link)
 		{
-			m_engine->addGlobalMapping(name, addr);
+			m_engine->updateGlobalMapping(name, addr);
 		}
 	}
 

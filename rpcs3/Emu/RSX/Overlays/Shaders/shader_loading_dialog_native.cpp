@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "shader_loading_dialog_native.h"
 #include "../overlay_message_dialog.h"
 #include "../../GSRender.h"
@@ -35,6 +35,12 @@ namespace rsx
 	void shader_loading_dialog_native::inc_value(u32 index, u32 value)
 	{
 		dlg->progress_bar_increment(index, static_cast<f32>(value));
+		owner->flip({});
+	}
+
+	void shader_loading_dialog_native::set_value(u32 index, u32 value)
+	{
+		dlg->progress_bar_set_value(index, static_cast<f32>(value));
 		owner->flip({});
 	}
 

@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 
 #include "TAR.h"
 
@@ -7,7 +7,7 @@
 
 LOG_CHANNEL(tar_log, "TAR");
 
-tar_object::tar_object(const fs::file& file, size_t offset)
+tar_object::tar_object(const fs::file& file, usz offset)
 	: m_file(file)
 	, initial_offset(static_cast<int>(offset))
 {
@@ -115,16 +115,6 @@ bool tar_object::extract(std::string path, std::string ignore)
 		case '0':
 		{
 			auto data = get_file(header.name).release();
-
-			if (fs::file prev{result})
-			{
-				if (prev.to_vector<u8>() == static_cast<fs::container_stream<std::vector<u8>>*>(data.get())->obj)
-				{
-					// Workaround: avoid overwriting existing data if it's the same.
-					tar_log.notice("TAR Loader: skipped existing file %s", header.name);
-					break;
-				}
-			}
 
 			fs::file file(result, fs::rewrite);
 

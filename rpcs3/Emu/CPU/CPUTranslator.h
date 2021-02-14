@@ -1,8 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #ifdef LLVM_AVAILABLE
 
-#include "restore_new.h"
 #ifdef _MSC_VER
 #pragma warning(push, 0)
 #else
@@ -22,11 +21,9 @@
 #else
 #pragma GCC diagnostic pop
 #endif
-#include "define_new_memleakdetect.h"
 
-#include "Utilities/types.h"
+#include "util/types.hpp"
 #include "Utilities/StrFmt.h"
-#include "Utilities/BEType.h"
 #include "Utilities/BitField.h"
 #include "util/logs.hpp"
 #include "Utilities/JIT.h"
@@ -37,6 +34,8 @@
 #include <set>
 #include <array>
 #include <vector>
+
+#include "util/v128.hpp"
 
 enum class i2 : char
 {
@@ -828,7 +827,7 @@ struct llvm_neg
 
 	static_assert(llvm_value_t<T>::is_sint || llvm_value_t<T>::is_uint || llvm_value_t<T>::is_float, "llvm_neg<>: invalid type");
 
-	static constexpr auto opc = llvm_value_t<T>::is_float ? llvm::Instruction::FNeg : llvm::Instruction::Sub;
+	static constexpr int opc = llvm_value_t<T>::is_float ? +llvm::Instruction::FNeg : +llvm::Instruction::Sub;
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
 	{
@@ -2487,7 +2486,7 @@ public:
 #ifdef _WIN32
 		func->setCallingConv(llvm::CallingConv::Win64);
 #endif
-		m_engine->updateGlobalMapping({lame.data(), lame.size()}, reinterpret_cast<std::uintptr_t>(_func));
+		m_engine->updateGlobalMapping({lame.data(), lame.size()}, reinterpret_cast<uptr>(_func));
 
 		const auto inst = m_ir->CreateCall(func, {args...});
 #ifdef _WIN32
@@ -2802,6 +2801,44 @@ public:
 		return result;
 	}
 
+	template <typename T1, typename T2>
+	value_t<u8[16]> vpermb(T1 a, T2 b)
+	{
+		value_t<u8[16]> result;
+
+		const auto data0 = a.eval(m_ir);
+		const auto index = b.eval(m_ir);
+		const auto zeros = llvm::ConstantAggregateZero::get(get_type<u8[16]>());
+
+		if (auto c = llvm::dyn_cast<llvm::Constant>(index))
+		{
+			// Convert VPERMB index back to LLVM vector shuffle mask
+			v128 mask{};
+
+			const auto cv = llvm::dyn_cast<llvm::ConstantDataVector>(c);
+
+			if (cv)
+			{
+				for (u32 i = 0; i < 16; i++)
+				{
+					const u64 b = cv->getElementAsInteger(i);
+					mask._u8[i] = b & 0xf;
+				}
+			}
+
+			if (cv || llvm::isa<llvm::ConstantAggregateZero>(c))
+			{
+				result.value = llvm::ConstantDataVector::get(m_context, llvm::makeArrayRef(reinterpret_cast<const u8*>(&mask), 16));
+				result.value = m_ir->CreateZExt(result.value, get_type<u32[16]>());
+				result.value = m_ir->CreateShuffleVector(data0, zeros, result.value);
+				return result;
+			}
+		}
+
+		result.value = m_ir->CreateCall(get_intrinsic(llvm::Intrinsic::x86_avx512_permvar_qi_128), {data0, index});
+		return result;
+	}
+
 	template <typename T1, typename T2, typename T3>
 	value_t<u8[16]> vperm2b(T1 a, T2 b, T3 c)
 	{
@@ -2810,16 +2847,27 @@ public:
 		const auto data0 = a.eval(m_ir);
 		const auto data1 = b.eval(m_ir);
 		const auto index = c.eval(m_ir);
-		const auto zeros = llvm::ConstantAggregateZero::get(get_type<u8[16]>());
 
 		if (auto c = llvm::dyn_cast<llvm::Constant>(index))
 		{
 			// Convert VPERM2B index back to LLVM vector shuffle mask
+			v128 mask{};
+
 			const auto cv = llvm::dyn_cast<llvm::ConstantDataVector>(c);
+
+			if (cv)
+			{
+				for (u32 i = 0; i < 16; i++)
+				{
+					const u64 b = cv->getElementAsInteger(i);
+					mask._u8[i] = b & 0x1f;
+				}
+			}
 
 			if (cv || llvm::isa<llvm::ConstantAggregateZero>(c))
 			{
-				result.value = m_ir->CreateZExt(cv, get_type<u32[16]>());
+				result.value = llvm::ConstantDataVector::get(m_context, llvm::makeArrayRef(reinterpret_cast<const u8*>(&mask), 16));
+				result.value = m_ir->CreateZExt(result.value, get_type<u32[16]>());
 				result.value = m_ir->CreateShuffleVector(data0, data1, result.value);
 				return result;
 			}
@@ -2916,9 +2964,9 @@ public:
 template <>
 struct fmt_unveil<llvm::TypeSize, void>
 {
-	using type = std::size_t;
+	using type = usz;
 
-	static inline std::size_t get(const llvm::TypeSize& arg)
+	static inline usz get(const llvm::TypeSize& arg)
 	{
 		return arg;
 	}

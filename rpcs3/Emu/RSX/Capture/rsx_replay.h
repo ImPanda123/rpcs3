@@ -1,13 +1,10 @@
-﻿#pragma once
+#pragma once
 
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/RSX/rsx_methods.h"
 
-#include <cereal/types/vector.hpp>
-#include <cereal/types/array.hpp>
-#include <cereal/types/string.hpp>
-#include <cereal/types/utility.hpp>
-#include <cereal/types/unordered_set.hpp>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace rsx
 {

@@ -1,8 +1,11 @@
-﻿#pragma once
+#pragma once
 
 #include "../CPU/CPUThread.h"
 #include "../Memory/vm_ptr.h"
 #include "Utilities/lockless.h"
+
+#include "util/logs.hpp"
+#include "util/v128.hpp"
 
 LOG_CHANNEL(ppu_log, "PPU");
 
@@ -59,6 +62,54 @@ struct ppu_thread_params
 	u64 arg1;
 };
 
+struct cmd64
+{
+	u64 m_data = 0;
+
+	constexpr cmd64() noexcept = default;
+
+	struct pair_t
+	{
+		u32 arg1;
+		u32 arg2;
+	};
+
+	template <typename T, typename T2 = simple_t<T>>
+	cmd64(const T& value)
+		: m_data(std::bit_cast<u64, T2>(value))
+	{
+	}
+
+	template <typename T1, typename T2>
+	cmd64(const T1& arg1, const T2& arg2)
+		: cmd64(pair_t{std::bit_cast<u32>(arg1), std::bit_cast<u32>(arg2)})
+	{
+	}
+
+	explicit operator bool() const
+	{
+		return m_data != 0;
+	}
+
+	template <typename T>
+	T as() const
+	{
+		return std::bit_cast<T>(m_data);
+	}
+
+	template <typename T>
+	T arg1() const
+	{
+		return std::bit_cast<T>(std::bit_cast<pair_t>(m_data).arg1);
+	}
+
+	template <typename T>
+	T arg2() const
+	{
+		return std::bit_cast<T>(std::bit_cast<pair_t>(m_data).arg2);
+	}
+};
+
 class ppu_thread : public cpu_thread
 {
 public:
@@ -67,13 +118,13 @@ public:
 	static const u32 id_count = 100;
 	static constexpr std::pair<u32, u32> id_invl_range = {12, 12};
 
-	virtual std::string dump_all() const override;
 	virtual std::string dump_regs() const override;
 	virtual std::string dump_callstack() const override;
 	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
 	virtual std::string dump_misc() const override;
 	virtual void cpu_task() override final;
 	virtual void cpu_sleep() override;
+	virtual void cpu_on_stop() override;
 	virtual ~ppu_thread() override;
 
 	ppu_thread(const ppu_thread_params&, std::string_view name, u32 prio, int detached = 0);
@@ -87,7 +138,7 @@ public:
 		u8 bits[32];
 		u32 fields[8];
 
-		u8& operator [](std::size_t i)
+		u8& operator [](usz i)
 		{
 			return bits[i];
 		}
@@ -207,6 +258,7 @@ public:
 	void cmd_pop(u32 = 0);
 	cmd64 cmd_wait(); // Empty command means caller must return, like true from cpu_thread::check_status().
 	cmd64 cmd_get(u32 index) { return cmd_queue[cmd_queue.peek() + index].load(); }
+	atomic_t<u32> cmd_notify = 0;
 
 	const ppu_func_opd_t entry_func;
 	u64 start_time{0}; // Sleep start timepoint
@@ -216,6 +268,8 @@ public:
 
 	// Thread name
 	atomic_ptr<std::string> ppu_tname;
+
+	u64 saved_native_sp = 0; // Host thread's stack pointer for emulated longjmp
 
 	u64 last_ftsc = 0;
 	u64 last_ftime = 0;
@@ -267,20 +321,6 @@ struct ppu_gpr_cast_impl<b8, void>
 	static inline b8 from(const u64 reg)
 	{
 		return static_cast<u32>(reg) != 0;
-	}
-};
-
-template<>
-struct ppu_gpr_cast_impl<error_code, void>
-{
-	static inline u64 to(const error_code& code)
-	{
-		return code;
-	}
-
-	static inline error_code from(const u64 reg)
-	{
-		return not_an_error(reg);
 	}
 };
 

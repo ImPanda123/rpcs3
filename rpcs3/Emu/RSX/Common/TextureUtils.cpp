@@ -1,8 +1,10 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "Emu/Memory/vm.h"
 #include "TextureUtils.h"
 #include "../RSXThread.h"
 #include "../rsx_utils.h"
+
+#include "util/asm.hpp"
 
 namespace
 {
@@ -295,6 +297,55 @@ struct copy_rgb655_block_swizzled
 namespace
 {
 	/**
+	 * Generates copy instructions required to build the texture GPU side without actually copying anything.
+	 * Returns a set of addresses and data lengths to use. This can be used to generate a GPU task to avoid CPU doing the heavy lifting.
+	 */
+	std::vector<rsx::memory_transfer_cmd>
+	build_transfer_cmds(const void* src, u16 block_size_in_bytes, u16 width_in_block, u16 row_count, u16 depth, u8 border, u32 dst_pitch_in_block, u32 src_pitch_in_block)
+	{
+		std::vector<rsx::memory_transfer_cmd> result;
+
+		if (src_pitch_in_block == dst_pitch_in_block && !border)
+		{
+			// Fast copy
+			rsx::memory_transfer_cmd cmd;
+			cmd.src = src;
+			cmd.dst = nullptr;
+			cmd.length = src_pitch_in_block * block_size_in_bytes * row_count * depth;
+			return { cmd };
+		}
+
+		const u32 width_in_bytes = width_in_block * block_size_in_bytes;
+		const u32 src_pitch_in_bytes = src_pitch_in_block * block_size_in_bytes;
+		const u32 dst_pitch_in_bytes = dst_pitch_in_block * block_size_in_bytes;
+
+		const u32 h_porch = border * block_size_in_bytes;
+		const u32 v_porch = src_pitch_in_bytes * border;
+
+		auto src_ = static_cast<const char*>(src) + h_porch;
+		auto dst_ = static_cast<const char*>(nullptr);
+
+		for (int layer = 0; layer < depth; ++layer)
+		{
+			// Front
+			src_ += v_porch;
+
+			for (int row = 0; row < row_count; ++row)
+			{
+				rsx::memory_transfer_cmd cmd{ dst_, src_, width_in_bytes };
+				result.push_back(cmd);
+				src_ += src_pitch_in_bytes;
+				dst_ += dst_pitch_in_bytes;
+			}
+
+			// Back
+			src_ += v_porch;
+		}
+
+		return result;
+	}
+
+	/**
 	 * Texture upload template.
 	 *
 	 * Source textures are stored as following (for power of 2 textures):
@@ -317,7 +368,7 @@ namespace
 		u8 block_size_in_bytes = sizeof(SRC_TYPE);
 
 		std::vector<rsx::subresource_layout> result;
-		size_t offset_in_src = 0;
+		usz offset_in_src = 0;
 
 		u8 border_size = border ? (padded_row ? 1 : 4) : 0;
 		u32 src_pitch_in_block;
@@ -346,8 +397,8 @@ namespace
 				}
 				else
 				{
-					current_subresource_layout.width_in_block = aligned_div(miplevel_width_in_texel, block_edge_in_texel);
-					current_subresource_layout.height_in_block = aligned_div(miplevel_height_in_texel, block_edge_in_texel);
+					current_subresource_layout.width_in_block = utils::aligned_div(miplevel_width_in_texel, block_edge_in_texel);
+					current_subresource_layout.height_in_block = utils::aligned_div(miplevel_height_in_texel, block_edge_in_texel);
 				}
 
 				if (padded_row)
@@ -375,7 +426,7 @@ namespace
 				miplevel_height_in_texel = std::max(miplevel_height_in_texel / 2, 1);
 			}
 
-			offset_in_src = align(offset_in_src, 128);
+			offset_in_src = utils::align(offset_in_src, 128);
 		}
 
 		return result;
@@ -383,30 +434,30 @@ namespace
 }
 
 template<typename T>
-u32 get_row_pitch_in_block(u16 width_in_block, size_t alignment)
+u32 get_row_pitch_in_block(u16 width_in_block, usz alignment)
 {
-	if (const size_t pitch = width_in_block * sizeof(T);
+	if (const usz pitch = width_in_block * sizeof(T);
 		pitch == alignment)
 	{
 		return width_in_block;
 	}
 	else
 	{
-		size_t divided = (pitch + alignment - 1) / alignment;
+		usz divided = (pitch + alignment - 1) / alignment;
 		return static_cast<u32>(divided * alignment / sizeof(T));
 	}
 }
 
-u32 get_row_pitch_in_block(u16 block_size_in_bytes, u16 width_in_block, size_t alignment)
+u32 get_row_pitch_in_block(u16 block_size_in_bytes, u16 width_in_block, usz alignment)
 {
-	if (const size_t pitch = width_in_block * block_size_in_bytes;
+	if (const usz pitch = width_in_block * block_size_in_bytes;
 		pitch == alignment)
 	{
 		return width_in_block;
 	}
 	else
 	{
-		size_t divided = (pitch + alignment - 1) / alignment;
+		usz divided = (pitch + alignment - 1) / alignment;
 		return static_cast<u32>(divided * alignment / block_size_in_bytes);
 	}
 }
@@ -425,7 +476,7 @@ std::tuple<u16, u16, u8> get_height_depth_layer(const RsxTextureType &tex)
 	case rsx::texture_dimension_extended::texture_dimension_cubemap: return std::make_tuple(tex.height(), 1, 6);
 	case rsx::texture_dimension_extended::texture_dimension_3d: return std::make_tuple(tex.height(), tex.depth(), 1);
 	}
-	fmt::throw_exception("Unsupported texture dimension" HERE);
+	fmt::throw_exception("Unsupported texture dimension");
 }
 }
 
@@ -442,7 +493,7 @@ std::vector<rsx::subresource_layout> get_subresources_layout_impl(const RsxTextu
 	const auto format = texture.format() & ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN);
 	const auto pitch = texture.pitch();
 
-	const u32 texaddr = rsx::get_address(texture.offset(), texture.location(), HERE);
+	const u32 texaddr = rsx::get_address(texture.offset(), texture.location());
 	auto pixels = vm::_ptr<const std::byte>(texaddr);
 
 	const bool is_swizzled = !(texture.format() & CELL_GCM_TEXTURE_LN);
@@ -501,7 +552,7 @@ std::vector<rsx::subresource_layout> get_subresources_layout_impl(const RsxTextu
 	case CELL_GCM_TEXTURE_COMPRESSED_DXT45:
 		return get_subresources_layout_impl<4, u128>(pixels, w, h, depth, layer, texture.get_exact_mipmap_count(), pitch, !is_swizzled, false);
 	}
-	fmt::throw_exception("Wrong format 0x%x" HERE, format);
+	fmt::throw_exception("Wrong format 0x%x", format);
 }
 
 namespace rsx
@@ -531,7 +582,7 @@ namespace rsx
 		return get_subresources_layout_impl(texture);
 	}
 
-	texture_memory_info upload_texture_subresource(gsl::span<std::byte> dst_buffer, const rsx::subresource_layout& src_layout, int format, bool is_swizzled, const texture_uploader_capabilities& caps)
+	texture_memory_info upload_texture_subresource(gsl::span<std::byte> dst_buffer, const rsx::subresource_layout& src_layout, int format, bool is_swizzled, texture_uploader_capabilities& caps)
 	{
 		u16 w = src_layout.width_in_block;
 		u16 h = src_layout.height_in_block;
@@ -642,6 +693,11 @@ namespace rsx
 				// Remove the VTC tiling to support ATI and Vulkan.
 				copy_unmodified_block_vtc::copy_mipmap_level(as_span_workaround<u64>(dst_buffer), as_const_span<const u64>(src_layout.data), w, h, depth, get_row_pitch_in_block<u64>(w, caps.alignment), src_layout.pitch_in_block);
 			}
+			else if (caps.supports_zero_copy)
+			{
+				result.require_upload = true;
+				result.deferred_cmds = build_transfer_cmds(src_layout.data.data(), 8, w, h, depth, 0, get_row_pitch_in_block<u64>(w, caps.alignment), src_layout.pitch_in_block);
+			}
 			else
 			{
 				copy_unmodified_block::copy_mipmap_level(as_span_workaround<u64>(dst_buffer), as_const_span<const u64>(src_layout.data), 1, w, h, depth, 0, get_row_pitch_in_block<u64>(w, caps.alignment), src_layout.pitch_in_block);
@@ -659,6 +715,11 @@ namespace rsx
 				// Remove the VTC tiling to support ATI and Vulkan.
 				copy_unmodified_block_vtc::copy_mipmap_level(as_span_workaround<u128>(dst_buffer), as_const_span<const u128>(src_layout.data), w, h, depth, get_row_pitch_in_block<u128>(w, caps.alignment), src_layout.pitch_in_block);
 			}
+			else if (caps.supports_zero_copy)
+			{
+				result.require_upload = true;
+				result.deferred_cmds = build_transfer_cmds(src_layout.data.data(), 16, w, h, depth, 0, get_row_pitch_in_block<u128>(w, caps.alignment), src_layout.pitch_in_block);
+			}
 			else
 			{
 				copy_unmodified_block::copy_mipmap_level(as_span_workaround<u128>(dst_buffer), as_const_span<const u128>(src_layout.data), 1, w, h, depth, 0, get_row_pitch_in_block<u128>(w, caps.alignment), src_layout.pitch_in_block);
@@ -667,7 +728,7 @@ namespace rsx
 		}
 
 		default:
-			fmt::throw_exception("Wrong format 0x%x" HERE, format);
+			fmt::throw_exception("Wrong format 0x%x", format);
 		}
 
 		if (word_size)
@@ -675,56 +736,73 @@ namespace rsx
 			if (word_size == 1)
 			{
 				if (is_swizzled)
+				{
 					copy_unmodified_block_swizzled::copy_mipmap_level(as_span_workaround<u8>(dst_buffer), as_const_span<const u8>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block);
-				else
-					copy_unmodified_block::copy_mipmap_level(as_span_workaround<u8>(dst_buffer), as_const_span<const u8>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
-			}
-			else if (caps.supports_byteswap)
-			{
-				result.require_swap = true;
-				result.element_size = word_size;
-				result.block_length = words_per_block;
-
-				if (word_size == 2)
-				{
-					if (is_swizzled)
-					{
-						if (((word_size * words_per_block) & 3) == 0 && caps.supports_hw_deswizzle)
-						{
-							result.require_deswizzle = true;
-						}
-					}
-
-					if (is_swizzled && !result.require_deswizzle)
-						copy_unmodified_block_swizzled::copy_mipmap_level(as_span_workaround<u16>(dst_buffer), as_const_span<const u16>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block);
-					else
-						copy_unmodified_block::copy_mipmap_level(as_span_workaround<u16>(dst_buffer), as_const_span<const u16>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
 				}
-				else if (word_size == 4)
+				else if (caps.supports_zero_copy)
 				{
-					result.require_deswizzle = (is_swizzled && caps.supports_hw_deswizzle);
-
-					if (is_swizzled && !caps.supports_hw_deswizzle)
-						copy_unmodified_block_swizzled::copy_mipmap_level(as_span_workaround<u32>(dst_buffer), as_const_span<const u32>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block);
-					else
-						copy_unmodified_block::copy_mipmap_level(as_span_workaround<u32>(dst_buffer), as_const_span<const u32>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					result.require_upload = true;
+					result.deferred_cmds = build_transfer_cmds(src_layout.data.data(), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+				}
+				else
+				{
+					copy_unmodified_block::copy_mipmap_level(as_span_workaround<u8>(dst_buffer), as_const_span<const u8>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
 				}
 			}
 			else
 			{
-				if (word_size == 2)
+				result.element_size = word_size;
+				result.block_length = words_per_block;
+
+				bool require_cpu_swizzle = !caps.supports_hw_deswizzle;
+				bool require_cpu_byteswap = !caps.supports_byteswap;
+
+				if (is_swizzled && caps.supports_hw_deswizzle)
 				{
-					if (is_swizzled)
-						copy_unmodified_block_swizzled::copy_mipmap_level(as_span_workaround<u16>(dst_buffer), as_const_span<const be_t<u16>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block);
+					if (word_size == 4 || (((word_size * words_per_block) & 3) == 0))
+					{
+						result.require_deswizzle = true;
+					}
 					else
-						copy_unmodified_block::copy_mipmap_level(as_span_workaround<u16>(dst_buffer), as_const_span<const be_t<u16>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					{
+						require_cpu_swizzle = true;
+					}
 				}
-				else if (word_size == 4)
+
+				if (!require_cpu_byteswap && !require_cpu_swizzle)
 				{
-					if (is_swizzled)
-						copy_unmodified_block_swizzled::copy_mipmap_level(as_span_workaround<u32>(dst_buffer), as_const_span<const be_t<u32>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block);
-					else
-						copy_unmodified_block::copy_mipmap_level(as_span_workaround<u32>(dst_buffer), as_const_span<const be_t<u32>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					result.require_swap = true;
+
+					if (caps.supports_zero_copy)
+					{
+						result.require_upload = true;
+						result.deferred_cmds = build_transfer_cmds(src_layout.data.data(), word_size * words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					}
+					else if (word_size == 2)
+					{
+						copy_unmodified_block::copy_mipmap_level(as_span_workaround<u16>(dst_buffer), as_const_span<const u16>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					}
+					else if (word_size == 4)
+					{
+						copy_unmodified_block::copy_mipmap_level(as_span_workaround<u32>(dst_buffer), as_const_span<const u32>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					}
+				}
+				else
+				{
+					if (word_size == 2)
+					{
+						if (is_swizzled)
+							copy_unmodified_block_swizzled::copy_mipmap_level(as_span_workaround<u16>(dst_buffer), as_const_span<const be_t<u16>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block);
+						else
+							copy_unmodified_block::copy_mipmap_level(as_span_workaround<u16>(dst_buffer), as_const_span<const be_t<u16>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					}
+					else if (word_size == 4)
+					{
+						if (is_swizzled)
+							copy_unmodified_block_swizzled::copy_mipmap_level(as_span_workaround<u32>(dst_buffer), as_const_span<const be_t<u32>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block);
+						else
+							copy_unmodified_block::copy_mipmap_level(as_span_workaround<u32>(dst_buffer), as_const_span<const be_t<u32>>(src_layout.data), words_per_block, w, h, depth, src_layout.border, dst_pitch_in_block, src_layout.pitch_in_block);
+					}
 				}
 			}
 		}
@@ -834,7 +912,7 @@ namespace rsx
 		case rsx::surface_color_format::w32z32y32x32:
 			return 16;
 		default:
-			fmt::throw_exception("Invalid color format 0x%x" HERE, static_cast<u32>(format));
+			fmt::throw_exception("Invalid color format 0x%x", static_cast<u32>(format));
 		}
 	}
 
@@ -862,8 +940,7 @@ namespace rsx
 		case rsx::surface_antialiasing::square_rotated_4_samples:
 			return 4;
 		default:
-			ASSUME(0);
-			return 0;
+			fmt::throw_exception("Unreachable");
 		}
 	}
 
@@ -911,41 +988,41 @@ namespace rsx
 		return width_in_block * bytes_per_block;
 	}
 
-	size_t get_placed_texture_storage_size(u16 width, u16 height, u32 depth, u8 format, u16 mipmap, bool cubemap, size_t row_pitch_alignment, size_t mipmap_alignment)
+	usz get_placed_texture_storage_size(u16 width, u16 height, u32 depth, u8 format, u16 mipmap, bool cubemap, usz row_pitch_alignment, usz mipmap_alignment)
 	{
 		format &= ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN);
-		size_t block_edge = get_format_block_size_in_texel(format);
-		size_t block_size_in_byte = get_format_block_size_in_bytes(format);
+		usz block_edge = get_format_block_size_in_texel(format);
+		usz block_size_in_byte = get_format_block_size_in_bytes(format);
 
-		size_t height_in_blocks = (height + block_edge - 1) / block_edge;
-		size_t width_in_blocks = (width + block_edge - 1) / block_edge;
+		usz height_in_blocks = (height + block_edge - 1) / block_edge;
+		usz width_in_blocks = (width + block_edge - 1) / block_edge;
 
-		size_t result = 0;
+		usz result = 0;
 		for (u16 i = 0; i < mipmap; ++i)
 		{
-			size_t rowPitch = align(block_size_in_byte * width_in_blocks, row_pitch_alignment);
-			result += align(rowPitch * height_in_blocks * depth, mipmap_alignment);
-			height_in_blocks = std::max<size_t>(height_in_blocks / 2, 1);
-			width_in_blocks = std::max<size_t>(width_in_blocks / 2, 1);
+			usz rowPitch = utils::align(block_size_in_byte * width_in_blocks, row_pitch_alignment);
+			result += utils::align(rowPitch * height_in_blocks * depth, mipmap_alignment);
+			height_in_blocks = std::max<usz>(height_in_blocks / 2, 1);
+			width_in_blocks = std::max<usz>(width_in_blocks / 2, 1);
 		}
 
 		// Mipmap, height and width aren't allowed to be zero
-		return verify("Texture params" HERE, result) * (cubemap ? 6 : 1);
+		return (ensure(result) * (cubemap ? 6 : 1));
 	}
 
-	size_t get_placed_texture_storage_size(const rsx::fragment_texture& texture, size_t row_pitch_alignment, size_t mipmap_alignment)
+	usz get_placed_texture_storage_size(const rsx::fragment_texture& texture, usz row_pitch_alignment, usz mipmap_alignment)
 	{
 		return get_placed_texture_storage_size(texture.width(), texture.height(), texture.depth(), texture.format(), texture.mipmap(), texture.cubemap(),
 			row_pitch_alignment, mipmap_alignment);
 	}
 
-	size_t get_placed_texture_storage_size(const rsx::vertex_texture& texture, size_t row_pitch_alignment, size_t mipmap_alignment)
+	usz get_placed_texture_storage_size(const rsx::vertex_texture& texture, usz row_pitch_alignment, usz mipmap_alignment)
 	{
 		return get_placed_texture_storage_size(texture.width(), texture.height(), texture.depth(), texture.format(), texture.mipmap(), texture.cubemap(),
 			row_pitch_alignment, mipmap_alignment);
 	}
 
-	static size_t get_texture_size(u32 format, u16 width, u16 height, u16 depth, u32 pitch, u16 mipmaps, u16 layers, u8 border)
+	static usz get_texture_size(u32 format, u16 width, u16 height, u16 depth, u32 pitch, u16 mipmaps, u16 layers, u8 border)
 	{
 		const auto gcm_format = format & ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN);
 		const bool packed = !(format & CELL_GCM_TEXTURE_LN);
@@ -1002,14 +1079,14 @@ namespace rsx
 		return size;
 	}
 
-	size_t get_texture_size(const rsx::fragment_texture& texture)
+	usz get_texture_size(const rsx::fragment_texture& texture)
 	{
 		return get_texture_size(texture.format(), texture.width(), texture.height(), texture.depth(),
 			texture.pitch(), texture.get_exact_mipmap_count(), texture.cubemap() ? 6 : 1,
 			texture.border_type() ^ 1);
 	}
 
-	size_t get_texture_size(const rsx::vertex_texture& texture)
+	usz get_texture_size(const rsx::vertex_texture& texture)
 	{
 		return get_texture_size(texture.format(), texture.width(), texture.height(), texture.depth(),
 			texture.pitch(), texture.get_exact_mipmap_count(), texture.cubemap() ? 6 : 1,
@@ -1083,7 +1160,7 @@ namespace rsx
 		case rsx::surface_depth_format2::z24s8_float:
 			return{ CELL_GCM_TEXTURE_DEPTH24_D8_FLOAT, true };
 		default:
-			ASSUME(0);
+			fmt::throw_exception("Unreachable");
 		}
 	}
 

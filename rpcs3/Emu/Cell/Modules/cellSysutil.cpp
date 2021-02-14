@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/IdManager.h"
@@ -413,7 +413,7 @@ error_code cellSysutilCheckCallback(ppu_thread& ppu)
 
 		if (ppu.is_stopped())
 		{
-			return 0;
+			return {};
 		}
 	}
 

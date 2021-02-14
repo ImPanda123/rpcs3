@@ -1,4 +1,4 @@
-﻿#include "headless_application.h"
+#include "headless_application.h"
 
 #include "Emu/RSX/Null/NullGSRender.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
@@ -13,7 +13,7 @@ headless_application::headless_application(int& argc, char** argv) : QCoreApplic
 {
 }
 
-void headless_application::Init()
+bool headless_application::Init()
 {
 	// Force init the emulator
 	InitializeEmulator("00000001", true, false); // TODO: get user from cli args if possible
@@ -26,6 +26,8 @@ void headless_application::Init()
 
 	// As per QT recommendations to avoid conflicts for POSIX functions
 	std::setlocale(LC_NUMERIC, "C");
+
+	return true;
 }
 
 void headless_application::InitializeConnects()
@@ -39,10 +41,15 @@ void headless_application::InitializeCallbacks()
 {
 	EmuCallbacks callbacks = CreateCallbacks();
 
-	callbacks.exit = [this](bool force_quit) -> bool
+	callbacks.try_to_quit = [this](bool force_quit, std::function<void()> on_exit) -> bool
 	{
 		if (force_quit)
 		{
+			if (on_exit)
+			{
+				on_exit();
+			}
+
 			quit();
 			return true;
 		}
@@ -72,7 +79,7 @@ void headless_application::InitializeCallbacks()
 		}
 		default:
 		{
-			fmt::throw_exception("Invalid video renderer: %s" HERE, type);
+			fmt::throw_exception("Invalid video renderer: %s", type);
 		}
 		}
 	};

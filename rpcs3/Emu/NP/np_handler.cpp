@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include <thread>
 #include "Emu/system_config.h"
 #include "np_handler.h"
@@ -21,7 +21,7 @@
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <net/if.h> 
+#include <net/if.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -31,6 +31,8 @@
 #include <ifaddrs.h>
 #include <net/if_dl.h>
 #endif
+
+#include "util/asm.hpp"
 
 LOG_CHANNEL(sys_net);
 LOG_CHANNEL(sceNp2);
@@ -77,7 +79,7 @@ np_handler::np_handler()
 
 		// Init switch map for dns
 		auto swaps = fmt::split(g_cfg.net.swap_list.to_string(), {"&&"});
-		for (std::size_t i = 0; i < swaps.size(); i++)
+		for (usz i = 0; i < swaps.size(); i++)
 		{
 			auto host_and_ip = fmt::split(swaps[i], {"="});
 			if (host_and_ip.size() != 2)
@@ -102,13 +104,13 @@ np_handler::np_handler()
 bool np_handler::discover_ip_address()
 {
 	std::array<char, 1024> hostname;
-	
+
 	if (gethostname(hostname.data(), hostname.size()) == -1)
 	{
 		nph_log.error("gethostname failed in IP discovery!");
 		return false;
 	}
-	
+
 	hostent *host = gethostbyname(hostname.data());
 	if (!host)
 	{
@@ -280,24 +282,21 @@ std::string np_handler::ether_to_string(std::array<u8, 6>& ether)
 	return fmt::format("%02X:%02X:%02X:%02X:%02X:%02X", ether[0], ether[1], ether[2], ether[3], ether[4], ether[5]);
 }
 
-void np_handler::string_to_npid(const char* str, SceNpId* npid)
+void np_handler::string_to_npid(const std::string& str, SceNpId* npid)
 {
 	memset(npid, 0, sizeof(SceNpId));
-	strncpy(npid->handle.data, str, sizeof(npid->handle.data));
-	npid->handle.term = 0;
+	strcpy_trunc(npid->handle.data, str);
 	// npid->reserved[0] = 1;
 }
 
-void np_handler::string_to_online_name(const char* str, SceNpOnlineName* online_name)
+void np_handler::string_to_online_name(const std::string& str, SceNpOnlineName* online_name)
 {
-	strncpy(online_name->data, str, sizeof(online_name->data));
-	online_name->term = 0;
+	strcpy_trunc(online_name->data, str);
 }
 
-void np_handler::string_to_avatar_url(const char* str, SceNpAvatarUrl* avatar_url)
+void np_handler::string_to_avatar_url(const std::string& str, SceNpAvatarUrl* avatar_url)
 {
-	strncpy(avatar_url->data, str, sizeof(avatar_url->data));
-	avatar_url->term = 0;
+	strcpy_trunc(avatar_url->data, str);
 }
 
 void np_handler::init_NP(u32 poolsize, vm::ptr<void> poolptr)
@@ -315,9 +314,9 @@ void np_handler::init_NP(u32 poolsize, vm::ptr<void> poolptr)
 	if (g_cfg.net.psn_status >= np_psn_status::fake)
 	{
 		std::string s_npid = g_cfg_rpcn.get_npid();
-		ASSERT(!s_npid.empty()); // It should have been generated before this
+		ensure(!s_npid.empty()); // It should have been generated before this
 
-		np_handler::string_to_npid(s_npid.c_str(), &npid);
+		np_handler::string_to_npid(s_npid, &npid);
 		const auto sigh = g_fxo->get<named_thread<signaling_handler>>();
 		sigh->set_self_sig_info(npid);
 	}
@@ -336,7 +335,7 @@ void np_handler::init_NP(u32 poolsize, vm::ptr<void> poolptr)
 	{
 		if (!is_psn_active)
 			break;
-		
+
 		// Connect RPCN client
 		if (!rpcn.connect(g_cfg_rpcn.get_host()))
 		{
@@ -352,8 +351,8 @@ void np_handler::init_NP(u32 poolsize, vm::ptr<void> poolptr)
 			return;
 		}
 
-		np_handler::string_to_online_name(rpcn.get_online_name().c_str(), &online_name);
-		np_handler::string_to_avatar_url(rpcn.get_avatar_url().c_str(), &avatar_url);
+		np_handler::string_to_online_name(rpcn.get_online_name(), &online_name);
+		np_handler::string_to_avatar_url(rpcn.get_avatar_url(), &avatar_url);
 		public_ip_addr = rpcn.get_addr_sig();
 
 		break;
@@ -384,7 +383,7 @@ vm::addr_t np_handler::allocate(u32 size)
 		return vm::cast(static_cast<u64>(0));
 
 	// Align allocs
-	const u32 alloc_size = ::align(size, 4);
+	const u32 alloc_size = utils::align(size, 4);
 	if (alloc_size > mpool_avail)
 	{
 		sceNp.error("Not enough memory available in NP pool!");
@@ -741,7 +740,7 @@ bool np_handler::reply_get_world_list(u32 req_id, std::vector<u8>& reply_data)
 	if (!world_list.empty())
 	{
 		world_info->world.set(allocate(sizeof(SceNpMatching2World) * world_list.size()));
-		for (size_t i = 0; i < world_list.size(); i++)
+		for (usz i = 0; i < world_list.size(); i++)
 		{
 			world_info->world[i].worldId                  = world_list[i];
 			world_info->world[i].numOfLobby               = 1; // TODO
@@ -1014,7 +1013,7 @@ bool np_handler::reply_req_sign_infos(u32 req_id, std::vector<u8>& reply_data)
 {
 	if (!pending_sign_infos_requests.count(req_id))
 		return error_and_disconnect("Unexpected reply ID to req RequestSignalingInfos");
-	
+
 	u32 conn_id = pending_sign_infos_requests.at(req_id);
 	pending_sign_infos_requests.erase(req_id);
 
@@ -1024,7 +1023,7 @@ bool np_handler::reply_req_sign_infos(u32 req_id, std::vector<u8>& reply_data)
 
 	if (reply.is_error())
 		return error_and_disconnect("Malformed reply to RequestSignalingInfos command");
-	
+
 	const auto sigh = g_fxo->get<named_thread<signaling_handler>>();
 	sigh->start_sig(conn_id, addr, port);
 
@@ -1038,7 +1037,7 @@ bool np_handler::reply_req_ticket(u32 req_id, std::vector<u8>& reply_data)
 
 	if (reply.is_error())
 		return error_and_disconnect("Malformed reply to RequestTicket command");
-	
+
 	current_ticket = std::move(ticket_raw);
 	auto ticket_size = static_cast<s32>(current_ticket.size());
 
@@ -1328,7 +1327,7 @@ u32 np_handler::generate_callback_info(SceNpMatching2ContextId ctx_id, vm::cptr<
 	callback_info ret;
 
 	const auto ctx = get_match2_context(ctx_id);
-	ASSERT(ctx);
+	ensure(ctx);
 
 	const u32 req_id = get_req_id(optParam ? optParam->appReqId : ctx->default_match2_optparam.appReqId);
 
@@ -1343,7 +1342,7 @@ u32 np_handler::generate_callback_info(SceNpMatching2ContextId ctx_id, vm::cptr<
 	return req_id;
 }
 
-u8* np_handler::allocate_req_result(u32 event_key, size_t size)
+u8* np_handler::allocate_req_result(u32 event_key, usz size)
 {
 	std::lock_guard lock(mutex_req_results);
 	match2_req_results[event_key] = std::vector<u8>(size, 0);

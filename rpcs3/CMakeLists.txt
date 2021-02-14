@@ -58,6 +58,7 @@ set(RPCS3_SRC
 	Input/basic_mouse_handler.cpp
 	Input/ds3_pad_handler.cpp
 	Input/ds4_pad_handler.cpp
+	Input/dualsense_pad_handler.cpp
 	Input/evdev_joystick_handler.cpp
 	Input/keyboard_pad_handler.cpp
 	Input/mm_joystick_handler.cpp
@@ -133,11 +134,19 @@ if(APPLE)
 			${CMAKE_SOURCE_DIR}/bin/Icons $<TARGET_FILE_DIR:rpcs3>/../Resources/Icons
 			COMMAND ${CMAKE_COMMAND} -E copy_directory
 			${CMAKE_SOURCE_DIR}/bin/GuiConfigs $<TARGET_FILE_DIR:rpcs3>/../Resources/GuiConfigs
+			COMMAND ${CMAKE_COMMAND} -E copy_directory
+			${CMAKE_SOURCE_DIR}/bin/git $<TARGET_FILE_DIR:rpcs3>/../Resources/git
 			COMMAND "${Qt5_DIR}/../../../bin/macdeployqt" "${PROJECT_BINARY_DIR}/bin/rpcs3.app")
 elseif(UNIX)
 	add_custom_command(TARGET rpcs3 POST_BUILD
 			COMMAND ${CMAKE_COMMAND} -E copy_directory
 			${CMAKE_SOURCE_DIR}/bin/Icons $<TARGET_FILE_DIR:rpcs3>/Icons)
+	add_custom_command(TARGET rpcs3 POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_directory
+			${CMAKE_SOURCE_DIR}/bin/GuiConfigs $<TARGET_FILE_DIR:rpcs3>/GuiConfigs)
+	add_custom_command(TARGET rpcs3 POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_directory
+			${CMAKE_SOURCE_DIR}/bin/git $<TARGET_FILE_DIR:rpcs3>/git)
 elseif(WIN32)
 	add_custom_command(TARGET rpcs3 POST_BUILD
 			COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/bin" "$<TARGET_FILE_DIR:rpcs3>"
@@ -161,5 +170,7 @@ if(UNIX AND NOT APPLE)
 	install(DIRECTORY ../bin/Icons
 		DESTINATION ${CMAKE_INSTALL_PREFIX}/share/rpcs3)
 	install(DIRECTORY ../bin/GuiConfigs
+		DESTINATION ${CMAKE_INSTALL_PREFIX}/share/rpcs3)
+	install(DIRECTORY ../bin/git
 		DESTINATION ${CMAKE_INSTALL_PREFIX}/share/rpcs3)
 endif()

@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 
-#include "stdafx.h"
+#include "util/types.hpp"
+#include "util/atomic.hpp"
 #include "Emu/RSX/GSFrameBase.h"
 
 #include <QWindow>
@@ -11,6 +12,9 @@
 #include <QWinTaskbarProgress>
 #include <QWinTaskbarButton>
 #endif
+
+#include <memory>
+#include <vector>
 
 class gui_settings;
 
@@ -34,13 +38,14 @@ private:
 
 	u64 m_frames = 0;
 	QString m_window_title;
-	std::atomic<bool> m_show_mouse = true;
+	atomic_t<bool> m_show_mouse = true;
 	bool m_disable_mouse = false;
 	bool m_disable_kb_hotkeys = false;
 	bool m_mouse_hide_and_lock = false;
 	bool m_show_mouse_in_fullscreen = false;
 	bool m_hide_mouse_after_idletime = false;
 	u32 m_hide_mouse_idletime = 2000; // ms
+	bool m_flip_showed_frame = false;
 
 public:
 	gs_frame(const QRect& geometry, const QIcon& appIcon, const std::shared_ptr<gui_settings>& gui_settings);
@@ -53,6 +58,7 @@ public:
 
 	// taskbar progress
 	void progress_reset(bool reset_limit = false);
+	void progress_set_value(int value);
 	void progress_increment(int delta);
 	void progress_set_limit(int limit);
 

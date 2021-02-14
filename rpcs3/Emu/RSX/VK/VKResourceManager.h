@@ -1,11 +1,17 @@
-﻿#pragma once
-#include "VKHelpers.h"
+#pragma once
+#include "vkutils/image.h"
+#include "vkutils/query_pool.hpp"
+#include "vkutils/sampler.h"
+
+#include <unordered_map>
+#include <deque>
+#include <memory>
 
 namespace vk
 {
 	u64 get_event_id();
 	u64 current_event_id();
-	void on_event_completed(u64 event_id);
+	void on_event_completed(u64 event_id, bool flush = false);
 
 	struct eid_scope_t
 	{
@@ -18,7 +24,7 @@ namespace vk
 		std::vector<std::unique_ptr<vk::query_pool>> m_disposed_query_pools;
 
 		eid_scope_t(u64 _eid):
-			eid(_eid), m_device(vk::get_current_renderer())
+			eid(_eid), m_device(g_render_device)
 		{}
 
 		~eid_scope_t()

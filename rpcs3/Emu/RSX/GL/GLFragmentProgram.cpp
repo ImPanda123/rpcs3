@@ -1,18 +1,18 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "GLFragmentProgram.h"
 
-#include "Emu/System.h"
+#include "Emu/system_config.h"
 #include "GLFragmentProgram.h"
 #include "GLCommonDecompiler.h"
 #include "../GCM.h"
 #include "../Common/GLSLCommon.h"
 
-std::string GLFragmentDecompilerThread::getFloatTypeName(size_t elementCount)
+std::string GLFragmentDecompilerThread::getFloatTypeName(usz elementCount)
 {
 	return glsl::getFloatTypeNameImpl(elementCount);
 }
 
-std::string GLFragmentDecompilerThread::getHalfTypeName(size_t elementCount)
+std::string GLFragmentDecompilerThread::getHalfTypeName(usz elementCount)
 {
 	return glsl::getHalfTypeNameImpl(elementCount);
 }
@@ -129,19 +129,20 @@ void GLFragmentDecompilerThread::insertConstants(std::stringstream & OS)
 
 			const auto mask = (1 << index);
 
-			if (m_prog.redirected_textures & mask)
+			if (properties.redirected_sampler_mask & mask)
 			{
 				// Provide a stencil view of the main resource for the S channel
 				OS << "uniform u" << samplerType << " " << PI.name << "_stencil;\n";
 			}
-			else if (m_prog.shadow_textures & mask)
+			else if (properties.shadow_sampler_mask & mask)
 			{
-				if (m_shadow_sampled_textures & mask)
+				if (properties.common_access_sampler_mask & mask)
 				{
-					if (m_2d_sampled_textures & mask)
-						rsx_log.error("Texture unit %d is sampled as both a shadow texture and a depth texture", index);
-					else
-						samplerType = "sampler2DShadow";
+					rsx_log.error("Texture unit %d is sampled as both a shadow texture and a depth texture", index);
+				}
+				else
+				{
+					samplerType += "Shadow";
 				}
 			}
 
@@ -202,10 +203,10 @@ void GLFragmentDecompilerThread::insertGlobalFunctions(std::stringstream &OS)
 	m_shader_props.domain = glsl::glsl_fragment_program;
 	m_shader_props.require_lit_emulation = properties.has_lit_op;
 	m_shader_props.fp32_outputs = !!(m_prog.ctrl & CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS);
-	m_shader_props.require_depth_conversion = m_prog.redirected_textures != 0;
+	m_shader_props.require_depth_conversion = properties.redirected_sampler_mask != 0;
 	m_shader_props.require_wpos = !!(properties.in_register_mask & in_wpos);
 	m_shader_props.require_texture_ops = properties.has_tex_op;
-	m_shader_props.require_shadow_ops = m_prog.shadow_textures != 0;
+	m_shader_props.require_shadow_ops = properties.shadow_sampler_mask != 0;
 	m_shader_props.require_texture_expand = properties.has_exp_tex_op;
 	m_shader_props.emulate_coverage_tests = true; // g_cfg.video.antialiasing_level == msaa_level::none;
 	m_shader_props.emulate_shadow_compare = device_props.emulate_depth_compare;
@@ -369,7 +370,7 @@ void GLFragmentProgram::Decompile(const RSXFragmentProgram& prog)
 				PT.type == "samplerCube")
 				continue;
 
-			size_t offset = atoi(PI.name.c_str() + 2);
+			usz offset = atoi(PI.name.c_str() + 2);
 			FragmentConstantOffsetCache.push_back(offset);
 		}
 	}

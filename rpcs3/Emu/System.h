@@ -1,9 +1,12 @@
-﻿#pragma once
+#pragma once
 
-#include "stdafx.h"
+#include "util/types.hpp"
+#include "util/atomic.hpp"
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
+#include <set>
 
 u64 get_system_time();
 u64 get_guest_system_time();
@@ -11,7 +14,7 @@ u64 get_guest_system_time();
 enum class localized_string_id;
 enum class video_renderer;
 
-enum class system_state
+enum class system_state : u32
 {
 	running,
 	paused,
@@ -41,8 +44,9 @@ struct EmuCallbacks
 	std::function<void()> on_resume;
 	std::function<void()> on_stop;
 	std::function<void()> on_ready;
-	std::function<bool(bool)> exit; // (force_quit) close RPCS3
-	std::function<void(s32, s32)> handle_taskbar_progress; // (type, value) type: 0 for reset, 1 for increment, 2 for set_limit
+	std::function<bool()> on_missing_fw;
+	std::function<bool(bool, std::function<void()>)> try_to_quit; // (force_quit, on_exit) Try to close RPCS3
+	std::function<void(s32, s32)> handle_taskbar_progress; // (type, value) type: 0 for reset, 1 for increment, 2 for set_limit, 3 for set_value
 	std::function<void()> init_kb_handler;
 	std::function<void()> init_mouse_handler;
 	std::function<void(std::string_view title_id)> init_pad_handler;
@@ -118,12 +122,12 @@ public:
 		m_state = system_state::running;
 	}
 
-	void Init();
+	void Init(bool add_only = false);
 
 	std::vector<std::string> argv;
 	std::vector<std::string> envp;
 	std::vector<u8> data;
-	std::vector<u8> klic;
+	std::vector<u128> klic;
 	std::string disc;
 	std::string hdd1;
 
@@ -238,6 +242,8 @@ public:
 
 	void ConfigureLogs();
 	void ConfigurePPUCache();
+
+	std::set<std::string> GetGameDirs() const;
 
 private:
 	void LimitCacheSize();

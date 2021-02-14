@@ -1,10 +1,11 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "VFS.h"
 #include "Utilities/bin_patch.h"
 #include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/perf_meter.hpp"
 
+#include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/PPUCallback.h"
 #include "Emu/Cell/PPUOpcodes.h"
@@ -12,10 +13,12 @@
 #include "Emu/Cell/PPUAnalyser.h"
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/Cell/RawSPUThread.h"
+#include "Emu/RSX/RSXThread.h"
 #include "Emu/Cell/lv2/sys_process.h"
 #include "Emu/Cell/lv2/sys_memory.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_prx.h"
+#include "Emu/Cell/lv2/sys_overlay.h"
 #include "Emu/Cell/lv2/sys_rsx.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 
@@ -27,17 +30,15 @@
 #include "Loader/ELF.h"
 
 #include "Utilities/StrUtil.h"
-#include "Utilities/sysinfo.h"
 
 #include "../Crypto/unself.h"
 #include "../Crypto/unpkg.h"
+#include "util/sysinfo.hpp"
 #include "util/yaml.hpp"
 #include "util/logs.hpp"
-
-#include "cereal/archives/binary.hpp"
+#include "util/cereal.hpp"
 
 #include <thread>
-#include <typeinfo>
 #include <queue>
 #include <fstream>
 #include <memory>
@@ -64,11 +65,14 @@ std::string g_cfg_defaults;
 
 atomic_t<u64> g_watchdog_hold_ctr{0};
 
-extern void ppu_load_exec(const ppu_exec_object&);
+extern bool ppu_load_exec(const ppu_exec_object&);
 extern void spu_load_exec(const spu_exec_object&);
-extern void ppu_initialize(const ppu_module&);
+extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_prx*>* loaded_prx);
+extern bool ppu_initialize(const ppu_module&, bool = false);
+extern void ppu_finalize(const ppu_module&);
 extern void ppu_unload_prx(const lv2_prx&);
 extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path);
 
 fs::file g_tty;
 atomic_t<s64> g_tty_size{0};
@@ -76,11 +80,14 @@ std::array<std::deque<std::string>, 16> g_tty_input;
 std::mutex g_tty_mutex;
 
 // Progress display server synchronization variables
-atomic_t<const char*> g_progr{nullptr};
+atomic_t<const char*> g_progr{""};
 atomic_t<u32> g_progr_ftotal{0};
 atomic_t<u32> g_progr_fdone{0};
 atomic_t<u32> g_progr_ptotal{0};
 atomic_t<u32> g_progr_pdone{0};
+
+// Report error and call std::abort(), defined in main.cpp
+[[noreturn]] void report_fatal_error(const std::string&);
 
 namespace
 {
@@ -114,7 +121,7 @@ void fmt_class_string<game_boot_result>::format(std::string& out, u64 arg)
 	});
 }
 
-void Emulator::Init()
+void Emulator::Init(bool add_only)
 {
 	jit_runtime::initialize();
 
@@ -236,6 +243,16 @@ void Emulator::Init()
 		make_path_verbose(dev_hdd1 + "caches/");
 	}
 
+	make_path_verbose(fs::get_cache_dir() + "shaderlog/");
+	make_path_verbose(fs::get_cache_dir() + "spu_progs/");
+	make_path_verbose(fs::get_config_dir() + "captures/");
+
+	if (add_only)
+	{
+		// We don't need to initialize the rest if we only add games
+		return;
+	}
+
 	// Log user
 	if (m_usr.empty())
 	{
@@ -305,9 +322,9 @@ void Emulator::Init()
 		}
 	}
 
-	make_path_verbose(fs::get_cache_dir() + "shaderlog/");
-	make_path_verbose(fs::get_config_dir() + "captures/");
-	make_path_verbose(fs::get_cache_dir() + "spu_progs/");
+	// Limit cache size
+	if (g_cfg.vfs.limit_cache_size)
+		LimitCacheSize();
 
 	// Initialize patch engine
 	g_fxo->init<patch_engine>()->append_global_patches();
@@ -363,27 +380,27 @@ namespace
 				u32 fdone = 0;
 				u32 ptotal = 0;
 				u32 pdone = 0;
-				u32 value = 0;
 
 				// Update progress
 				while (thread_ctrl::state() != thread_state::aborting)
 				{
-					if (ftotal != g_progr_ftotal || fdone != g_progr_fdone || ptotal != g_progr_ptotal || pdone != g_progr_pdone)
+					const u32 ftotal_new = g_progr_ftotal;
+					const u32 fdone_new  = g_progr_fdone;
+					const u32 ptotal_new = g_progr_ptotal;
+					const u32 pdone_new  = g_progr_pdone;
+
+					if (ftotal != ftotal_new || fdone != fdone_new || ptotal != ptotal_new || pdone != pdone_new)
 					{
-						ftotal = g_progr_ftotal;
-						fdone = g_progr_fdone;
-						ptotal = g_progr_ptotal;
-						pdone = g_progr_pdone;
+						ftotal = ftotal_new;
+						fdone  = fdone_new;
+						ptotal = ptotal_new;
+						pdone  = pdone_new;
 
 						// Compute new progress in percents
-						const u32 total = ftotal + ptotal;
-						const u32 done = fdone + pdone;
-						const u32 new_value = static_cast<u32>(double(done) * 100. / double(total ? total : 1));
-
-						// Compute the difference
-						const u32 delta = new_value > value ? new_value - value : 0;
-
-						value += delta;
+						// Assume not all programs were found if files were not compiled (as it may contain more)
+						const u64 total = std::max<u64>(ptotal, 1) * std::max<u64>(ftotal, 1);
+						const u64 done = pdone * std::max<u64>(fdone, 1);
+						const double value = std::fmin(done * 100. / total, 100.);
 
 						// Changes detected, send update
 						Emu.CallAfter([=]()
@@ -399,7 +416,7 @@ namespace
 							{
 								dlg->SetMsg(+g_progr);
 								dlg->ProgressBarSetMsg(0, progr);
-								dlg->ProgressBarInc(0, delta);
+								dlg->ProgressBarSetValue(0, std::floor(value));
 							}
 						});
 					}
@@ -419,9 +436,9 @@ namespace
 				}
 
 				// Cleanup
-				g_progr_ftotal -= fdone;
+				g_progr_ftotal -= ftotal;
 				g_progr_fdone  -= fdone;
-				g_progr_ptotal -= pdone;
+				g_progr_ptotal -= ptotal;
 				g_progr_pdone  -= pdone;
 
 				if (dlg)
@@ -432,6 +449,14 @@ namespace
 					});
 				}
 			}
+		}
+
+		~progress_dialog_server()
+		{
+			g_progr_ftotal.release(0);
+			g_progr_fdone.release(0);
+			g_progr_ptotal.release(0);
+			g_progr_pdone.release(0);
 		}
 
 		static auto constexpr thread_name = "Progress Dialog Server"sv;
@@ -516,14 +541,16 @@ std::string Emulator::PPUCache() const
 
 bool Emulator::BootRsxCapture(const std::string& path)
 {
-	if (!fs::is_file(path))
+	fs::file in_file(path);
+
+	if (!in_file)
+	{
 		return false;
+	}
 
-	std::fstream f(path, std::ios::in | std::ios::binary);
-
-	cereal::BinaryInputArchive archive(f);
 	std::unique_ptr<rsx::frame_capture_data> frame = std::make_unique<rsx::frame_capture_data>();
-	archive(*frame);
+	cereal_deserialize(*frame, in_file.to_string());
+	in_file.close();
 
 	if (frame->magic != rsx::FRAME_CAPTURE_MAGIC)
 	{
@@ -553,7 +580,9 @@ bool Emulator::BootRsxCapture(const std::string& path)
 	GetCallbacks().on_run(false);
 	m_state = system_state::running;
 
-	g_fxo->init<named_thread<rsx::rsx_replay_thread>>("RSX Replay"sv, std::move(frame));
+	auto replay_thr = g_fxo->init<named_thread<rsx::rsx_replay_thread>>("RSX Replay"sv, std::move(frame));
+	replay_thr->state -= cpu_flag::stop;
+	replay_thr->state.notify_one(cpu_flag::stop);
 
 	return true;
 }
@@ -647,27 +676,29 @@ void Emulator::LimitCacheSize()
 
 game_boot_result Emulator::BootGame(const std::string& path, const std::string& title_id, bool direct, bool add_only, bool force_global_config)
 {
-	if (g_cfg.vfs.limit_cache_size)
-		LimitCacheSize();
-
-	static const char* boot_list[] =
+	if (!fs::exists(path))
 	{
-		"/eboot.bin",
-		"/EBOOT.BIN",
-		"/USRDIR/EBOOT.BIN",
-		"/USRDIR/ISO.BIN.EDAT",
-		"/PS3_GAME/USRDIR/EBOOT.BIN",
-	};
+		return game_boot_result::invalid_file_or_folder;
+	}
 
 	m_path_old = m_path;
 
-	if (direct && fs::exists(path))
+	if (direct || fs::is_file(path))
 	{
 		m_path = path;
 		return Load(title_id, add_only, force_global_config);
 	}
 
 	game_boot_result result = game_boot_result::nothing_to_boot;
+
+	static const char* boot_list[] =
+	{
+		"/EBOOT.BIN",
+		"/USRDIR/EBOOT.BIN",
+		"/USRDIR/ISO.BIN.EDAT",
+		"/PS3_GAME/USRDIR/EBOOT.BIN",
+	};
+
 	for (std::string elf : boot_list)
 	{
 		elf = path + elf;
@@ -769,7 +800,7 @@ std::string Emulator::GetExeDir()
 	GetModuleFileNameW(nullptr, buffer, sizeof(buffer)/2);
 
 	std::string path_to_exe = wchar_to_utf8(buffer);
-	size_t last = path_to_exe.find_last_of("\\");
+	usz last = path_to_exe.find_last_of("\\");
 	return last == std::string::npos ? std::string("") : path_to_exe.substr(0, last+1);
 }
 #endif
@@ -881,7 +912,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 	}
 
 	{
-		Init();
+		Init(add_only);
 
 		// Load game list (maps ABCD12345 IDs to /dev_bdvd/ locations)
 		YAML::Node games;
@@ -1057,11 +1088,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			sys_log.notice("Hdd1: %s", vfs::get("/dev_hdd1"));
 		}
 
-		if (!fs::is_file(g_cfg.vfs.get_dev_flash() + "sys/external/liblv2.sprx"))
-		{
-			return game_boot_result::firmware_missing;
-		}
-
 		// Special boot mode (directory scan)
 		if (!add_only && fs::is_dir(m_path))
 		{
@@ -1075,10 +1101,20 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			// Force LLVM recompiler
 			g_cfg.core.ppu_decoder.from_default();
 
-			// Force lib loading mode
-			g_cfg.core.lib_loading.from_string("Manually load selected libraries");
-			verify(HERE), g_cfg.core.lib_loading == lib_loading_type::manual;
-			g_cfg.core.load_libraries.from_default();
+			// Force LLE lib loading mode
+			g_cfg.core.libraries_control.set_set([]()
+			{
+				std::set<std::string> set;
+
+				extern const std::map<std::string_view, int> g_prx_list;
+
+				for (const auto& lib : g_prx_list)
+				{
+					set.emplace(std::string(lib.first) + ":lle");
+				}
+
+				return set;
+			}());
 
 			// Fake arg (workaround)
 			argv.resize(1);
@@ -1102,60 +1138,14 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 					}
 				}
 
-				std::vector<std::pair<std::string, u64>> file_queue;
-				file_queue.reserve(2000);
-
-				// Initialize progress dialog
-				g_progr = "Scanning directories for SPRX libraries...";
-
-				// Find all .sprx files recursively (TODO: process .mself files)
-				for (std::size_t i = 0; i < dir_queue.size(); i++)
-				{
-					if (Emu.IsStopped())
-					{
-						break;
-					}
-
-					sys_log.notice("Scanning directory: %s", dir_queue[i]);
-
-					for (auto&& entry : fs::dir(dir_queue[i]))
-					{
-						if (Emu.IsStopped())
-						{
-							break;
-						}
-
-						if (entry.is_directory)
-						{
-							if (entry.name != "." && entry.name != "..")
-							{
-								dir_queue.emplace_back(dir_queue[i] + entry.name + '/');
-							}
-
-							continue;
-						}
-
-						// Check .sprx filename
-						if (fmt::to_upper(entry.name).ends_with(".SPRX"))
-						{
-							if (entry.name == "libfs_155.sprx")
-							{
-								continue;
-							}
-
-							// Get full path
-							file_queue.emplace_back(dir_queue[i] + entry.name, 0);
-							g_progr_ftotal++;
-						}
-					}
-				}
-
-				g_progr = "Compiling PPU modules";
+				// Try to add all related directories
+				const std::set<std::string> dirs = GetGameDirs();
+				dir_queue.insert(std::end(dir_queue), std::begin(dirs), std::end(dirs));
 
 				if (std::string path = m_path + "/USRDIR/EBOOT.BIN"; fs::is_file(path))
 				{
 					// Compile EBOOT.BIN first
-					sys_log.notice("Trying to load EBOOT.BIN: %s", path);
+					ppu_log.notice("Trying to load EBOOT.BIN: %s", path);
 
 					fs::file src{path};
 
@@ -1183,55 +1173,15 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				else
 				{
 					// Workaround for analyser glitches
-					verify(HERE), vm::falloc(0x10000, 0xf0000, vm::main);
+					ensure(vm::falloc(0x10000, 0xf0000, vm::main));
 				}
 
-				atomic_t<std::size_t> fnext = 0;
-
-				shared_mutex sprx_mtx;
-
-				named_thread_group workers("SPRX Worker ", GetMaxThreads(), [&]
+				if (Emu.IsStopped())
 				{
-					for (std::size_t func_i = fnext++; func_i < file_queue.size(); func_i = fnext++)
-					{
-						const auto& path = std::as_const(file_queue)[func_i].first;
+					return;
+				}
 
-						sys_log.notice("Trying to load SPRX: %s", path);
-
-						// Load MSELF or SPRX
-						fs::file src{path};
-
-						if (file_queue[func_i].second == 0)
-						{
-							// Some files may fail to decrypt due to the lack of klic
-							src = decrypt_self(std::move(src));
-						}
-
-						const ppu_prx_object obj = src;
-
-						if (obj == elf_error::ok)
-						{
-							std::unique_lock lock(sprx_mtx);
-
-							if (auto prx = ppu_load_prx(obj, path))
-							{
-								lock.unlock();
-								ppu_initialize(*prx);
-								lock.lock();
-								ppu_unload_prx(*prx);
-								g_progr_fdone++;
-								continue;
-							}
-						}
-
-						sys_log.error("Failed to load SPRX '%s' (%s)", path, obj.get_error());
-						g_progr_fdone++;
-						continue;
-					}
-				});
-
-				// Join every thread
-				workers.join();
+				ppu_precompile(dir_queue, nullptr);
 
 				// Exit "process"
 				Emu.CallAfter([]
@@ -1244,7 +1194,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 		}
 
 		// Detect boot location
-		constexpr size_t game_dir_size = 8; // size of PS3_GAME and PS3_GMXX
+		constexpr usz game_dir_size = 8; // size of PS3_GAME and PS3_GMXX
 		const std::string hdd0_game    = vfs::get("/dev_hdd0/game/");
 		const std::string hdd0_disc    = vfs::get("/dev_hdd0/disc/");
 		const bool from_hdd0_game      = m_path.find(hdd0_game) != umax;
@@ -1252,7 +1202,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 		// Mount /dev_bdvd/ if necessary
 		if (bdvd_dir.empty() && disc.empty())
 		{
-			if (const size_t usrdir_pos = elf_dir.rfind("/USRDIR"); usrdir_pos != umax)
+			if (const usz usrdir_pos = elf_dir.rfind("/USRDIR"); usrdir_pos != umax)
 			{
 				const std::string main_dir = elf_dir.substr(0, usrdir_pos);
 
@@ -1358,10 +1308,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			sys_log.notice("PS1 Game: %s, %s", m_title_id, m_title);
 
 			const std::string game_path = "/dev_hdd0/game/" + m_path.substr(hdd0_game.size(), 9);
-
-			sys_log.notice("Forcing manual lib loading mode");
-			g_cfg.core.lib_loading.from_string(fmt::format("%s", lib_loading_type::manual));
-			g_cfg.core.load_libraries.from_list({});
 
 			argv.resize(9);
 			argv[0] = "/dev_flash/ps1emu/ps1_newemu.self";
@@ -1497,7 +1443,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 		if (disc.empty() && !bdvd_dir.empty() && m_path != hdd0_boot && fs::is_file(hdd0_boot))
 		{
 			// Booting game update
-			sys_log.success("Updates found at /dev_hdd0/game/%s/!", m_title_id);
+			sys_log.success("Updates found at /dev_hdd0/game/%s/", m_title_id);
 			return m_path = hdd0_boot, Load(m_title_id, false, force_global_config, true);
 		}
 
@@ -1560,7 +1506,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				elf_file.open(decrypted_path);
 			}
 			// Decrypt SELF
-			else if ((elf_file = decrypt_self(std::move(elf_file), klic.empty() ? nullptr : klic.data(), &g_ps3_process_info.self_info)))
+			else if ((elf_file = decrypt_self(std::move(elf_file), klic.empty() ? nullptr : reinterpret_cast<u8*>(&klic[0]), &g_ps3_process_info.self_info)))
 			{
 				if (true)
 				{
@@ -1622,7 +1568,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				else if (!bdvd_dir.empty() && fs::is_dir(bdvd_dir))
 				{
 					// Disc games are on /dev_bdvd/
-					const std::size_t pos = m_path.rfind(m_game_dir);
+					const usz pos = m_path.rfind(m_game_dir);
 					argv[0] = "/dev_bdvd/PS3_GAME/" + m_path.substr(pos + game_dir_size + 1);
 					m_dir = "/dev_bdvd/PS3_GAME/";
 				}
@@ -1636,17 +1582,32 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				sys_log.notice("Elf path: %s", argv[0]);
 			}
 
-			const auto _main = g_fxo->init<ppu_module>();
+			g_fxo->init<ppu_module>();
 
-			ppu_load_exec(ppu_exec);
+			if (ppu_load_exec(ppu_exec))
+			{
+				ConfigurePPUCache();
 
-			ConfigurePPUCache();
+				g_fxo->init();
+				Emu.GetCallbacks().init_gs_render();
+				Emu.GetCallbacks().init_pad_handler(m_title_id);
+				Emu.GetCallbacks().init_kb_handler();
+				Emu.GetCallbacks().init_mouse_handler();
+			}
+			// Overlay (OVL) executable (only load it)
+			else if (vm::map(0x3000'0000, 0x1000'0000, 0x200); !ppu_load_overlay(ppu_exec, m_path).first)
+			{
+				ppu_exec.set_error(elf_error::header_type);
+			}
 
-			g_fxo->init();
-			Emu.GetCallbacks().init_gs_render();
-			Emu.GetCallbacks().init_pad_handler(m_title_id);
-			Emu.GetCallbacks().init_kb_handler();
-			Emu.GetCallbacks().init_mouse_handler();
+			if (ppu_exec != elf_error::ok)
+			{
+				Stop();
+
+				sys_log.error("Invalid or unsupported PPU executable format: %s", elf_path);
+
+				return game_boot_result::invalid_file_or_folder;
+			}
 		}
 		else if (ppu_prx.open(elf_file) == elf_error::ok)
 		{
@@ -1680,6 +1641,15 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 		{
 			if (ppu_exec == elf_error::ok)
 			{
+				if (!fs::is_file(g_cfg.vfs.get_dev_flash() + "sys/external/liblv2.sprx"))
+				{
+					if (!GetCallbacks().on_missing_fw())
+					{
+						Stop();
+						return game_boot_result::firmware_missing;
+					}
+				}
+
 				Run(true);
 			}
 
@@ -1727,16 +1697,16 @@ void Emulator::Run(bool start_playtime)
 	ConfigureLogs();
 
 	// Run main thread
-	idm::check<named_thread<ppu_thread>>(ppu_thread::id_base, [](cpu_thread& cpu)
+	idm::check<named_thread<ppu_thread>>(ppu_thread::id_base, [](named_thread<ppu_thread>& cpu)
 	{
-		cpu.state -= cpu_flag::stop;
-		cpu.notify();
+		ensure(cpu.state.test_and_reset(cpu_flag::stop));
+		cpu.state.notify_one(cpu_flag::stop);
 	});
 
 	if (auto thr = g_fxo->get<named_thread<rsx::rsx_replay_thread>>())
 	{
 		thr->state -= cpu_flag::stop;
-		thread_ctrl::notify(*thr);
+		thr->state.notify_one(cpu_flag::stop);
 	}
 
 	if (g_cfg.misc.prevent_display_sleep)
@@ -1774,6 +1744,11 @@ bool Emulator::Pause()
 	idm::select<named_thread<ppu_thread>>(on_select);
 	idm::select<named_thread<spu_thread>>(on_select);
 
+	if (auto rsx = g_fxo->get<rsx::thread>())
+	{
+		rsx->state += cpu_flag::dbg_global_pause;
+	}
+
 	// Always Enable display sleep, not only if it was prevented.
 	enable_display_sleep();
 
@@ -1794,8 +1769,7 @@ void Emulator::Resume()
 	// Print and reset debug data collected
 	if (m_state == system_state::paused && g_cfg.core.ppu_debug)
 	{
-		PPUDisAsm dis_asm(CPUDisAsm_DumpMode);
-		dis_asm.offset = vm::g_sudo_addr;
+		PPUDisAsm dis_asm(cpu_disasm_mode::dump, vm::g_sudo_addr);
 
 		std::string dump;
 
@@ -1805,7 +1779,6 @@ void Emulator::Resume()
 			{
 				if (auto& data = *reinterpret_cast<be_t<u32>*>(vm::g_stat_addr + i))
 				{
-					dis_asm.dump_pc = i;
 					dis_asm.disasm(i);
 					fmt::append(dump, "\n\t'%08X' %s", data, dis_asm.last_opcode);
 					data = 0;
@@ -1838,11 +1811,18 @@ void Emulator::Resume()
 	auto on_select = [](u32, cpu_thread& cpu)
 	{
 		cpu.state -= cpu_flag::dbg_global_pause;
-		cpu.notify();
+		cpu.state.notify_one(cpu_flag::dbg_global_pause);
 	};
 
 	idm::select<named_thread<ppu_thread>>(on_select);
 	idm::select<named_thread<spu_thread>>(on_select);
+
+	if (auto rsx = g_fxo->get<rsx::thread>())
+	{
+		// TODO: notify?
+		rsx->state -= cpu_flag::dbg_global_pause;
+	}
+
 	GetCallbacks().on_resume();
 
 	if (g_cfg.misc.prevent_display_sleep)
@@ -1892,6 +1872,12 @@ void Emulator::Stop(bool restart)
 	sys_log.notice("Stopping emulator...");
 
 	GetCallbacks().on_stop();
+
+	if (auto rsx = g_fxo->get<rsx::thread>())
+	{
+		// TODO: notify?
+		rsx->state += cpu_flag::exit;
+	}
 
 	cpu_thread::stop_all();
 	g_fxo->reset();
@@ -1966,10 +1952,13 @@ bool Emulator::Quit(bool force_quit)
 {
 	m_force_boot = false;
 
-	// Deinitialize object manager to prevent any hanging objects at program exit
-	*g_fxo = {};
-
-	return GetCallbacks().exit(force_quit);
+	// The callback is only used if we actually quit RPCS3
+	const auto on_exit = []()
+	{
+		// Deinitialize object manager to prevent any hanging objects at program exit
+		*g_fxo = {};
+	};
+	return GetCallbacks().try_to_quit(force_quit, on_exit);
 }
 
 std::string Emulator::GetFormattedTitle(double fps) const
@@ -1988,13 +1977,14 @@ std::string Emulator::GetFormattedTitle(double fps) const
 u32 Emulator::GetMaxThreads() const
 {
 	const u32 max_threads = static_cast<u32>(g_cfg.core.llvm_threads);
-	const u32 thread_count = max_threads > 0 ? std::min(max_threads, std::thread::hardware_concurrency()) : std::thread::hardware_concurrency();
+	const u32 hw_threads = utils::get_thread_count();
+	const u32 thread_count = max_threads > 0 ? std::min(max_threads, hw_threads) : hw_threads;
 	return thread_count;
 }
 
 s32 error_code::error_report(const fmt_type_info* sup, u64 arg, const fmt_type_info* sup2, u64 arg2)
 {
-	static thread_local std::unordered_map<std::string, std::size_t> g_tls_error_stats;
+	static thread_local std::unordered_map<std::string, usz> g_tls_error_stats;
 	static thread_local std::string g_tls_error_str;
 
 	if (!sup)
@@ -2099,16 +2089,50 @@ void Emulator::ConfigurePPUCache()
 	}
 }
 
-template <>
-void stx::manual_fixed_typemap<void>::init_reporter(const char* name, unsigned long long created) const noexcept
+std::set<std::string> Emulator::GetGameDirs() const
 {
-	sys_log.notice("[ord:%u] Object '%s' was created", created, name);
-}
+	std::set<std::string> dirs;
 
-template <>
-void stx::manual_fixed_typemap<void>::destroy_reporter(const char* name, unsigned long long created) const noexcept
-{
-	sys_log.notice("[ord:%u] Object '%s' is destroying", created, name);
+	// Add boot directory.
+	// For installed titles and disc titles with updates this is usually /dev_hdd0/game/<title_id>/
+	// For disc titles without updates this is /dev_bdvd/PS3_GAME/
+	if (const std::string dir = vfs::get(GetDir()); !dir.empty())
+	{
+		dirs.insert(dir + '/');
+	}
+
+	// Add more paths for disc titles.
+	if (const std::string dev_bdvd = vfs::get("/dev_bdvd/PS3_GAME");
+		!dev_bdvd.empty() && !GetTitleID().empty())
+	{
+		// Add the dev_bdvd dir if available. This is necessary for disc titles with installed updates.
+		dirs.insert(dev_bdvd + '/');
+
+		// Naive search for all matching game data dirs.
+		const std::string game_dir = vfs::get("/dev_hdd0/game/");
+		for (auto&& entry : fs::dir(game_dir))
+		{
+			if (entry.is_directory && entry.name.starts_with(GetTitleID()))
+			{
+				const std::string sfo_dir = game_dir + entry.name + '/';
+				const fs::file sfo_file(sfo_dir + "PARAM.SFO");
+				if (!sfo_file)
+				{
+					continue;
+				}
+
+				const psf::registry psf    = psf::load_object(sfo_file);
+				const std::string title_id = std::string(psf::get_string(psf, "TITLE_ID", ""));
+
+				if (title_id == GetTitleID())
+				{
+					dirs.insert(sfo_dir);
+				}
+			}
+		}
+	}
+
+	return dirs;
 }
 
 Emulator Emu;

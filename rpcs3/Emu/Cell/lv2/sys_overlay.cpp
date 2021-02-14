@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Memory/vm_ptr.h"
@@ -12,9 +12,10 @@
 #include "sys_overlay.h"
 #include "sys_fs.h"
 
-extern std::shared_ptr<lv2_overlay> ppu_load_overlay(const ppu_exec_object&, const std::string& path);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path);
 
-extern void ppu_initialize(const ppu_module&);
+extern bool ppu_initialize(const ppu_module&, bool = false);
+extern void ppu_finalize(const ppu_module&);
 
 LOG_CHANNEL(sys_overlay);
 
@@ -32,14 +33,23 @@ static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vp
 		src = std::move(lv2_file);
 	}
 
-	const ppu_exec_object obj = decrypt_self(std::move(src), g_fxo->get<loaded_npdrm_keys>()->devKlic.load()._bytes);
+	u128 klic = g_fxo->get<loaded_npdrm_keys>()->devKlic.load();
+
+	ppu_exec_object obj = decrypt_self(std::move(src), reinterpret_cast<u8*>(&klic));
 
 	if (obj != elf_error::ok)
 	{
 		return {CELL_ENOEXEC, obj.operator elf_error()};
 	}
 
-	const auto ovlm = ppu_load_overlay(obj, vfs::get(vpath));
+	const auto [ovlm, error] = ppu_load_overlay(obj, vfs::get(vpath));
+
+	obj.clear();
+
+	if (error)
+	{
+		return error;
+	}
 
 	ppu_initialize(*ovlm);
 
@@ -115,6 +125,8 @@ error_code sys_overlay_unload_module(u32 ovlmid)
 	{
 		vm::dealloc(seg.addr);
 	}
+
+	ppu_finalize(*_main);
 
 	return CELL_OK;
 }

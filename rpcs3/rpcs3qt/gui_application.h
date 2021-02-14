@@ -1,6 +1,6 @@
-﻿#pragma once
+#pragma once
 
-#include "stdafx.h"
+#include "util/types.hpp"
 
 #include <QApplication>
 #include <QElapsedTimer>
@@ -8,6 +8,9 @@
 #include <QTranslator>
 
 #include "main_application.h"
+
+#include <memory>
+#include <functional>
 
 class gs_frame;
 class main_window;
@@ -36,7 +39,7 @@ public:
 	}
 
 	/** Call this method before calling app.exec */
-	void Init() override;
+	bool Init() override;
 
 	std::unique_ptr<gs_frame> get_gs_frame();
 
@@ -74,7 +77,7 @@ private:
 	bool m_use_cli_style = false;
 
 private Q_SLOTS:
-	void OnChangeStyleSheetRequest(const QString& path);
+	void OnChangeStyleSheetRequest();
 	void OnEmuSettingsChange();
 
 Q_SIGNALS:

@@ -1,8 +1,8 @@
-﻿#pragma once
+#pragma once
+
+#include "util/types.hpp"
 
 #include "yaml-cpp/yaml.h"
-
-#include "stdafx.h"
 
 #include "microphone_creator.h"
 #include "render_creator.h"
@@ -14,6 +14,9 @@
 #include <QComboBox>
 #include <QSpinBox>
 #include <QDateTimeEdit>
+
+#include <string>
+#include <vector>
 
 constexpr auto qstr = QString::fromStdString;
 
@@ -31,6 +34,8 @@ public:
 	*/
 	emu_settings();
 	~emu_settings();
+
+	bool Init();
 
 	/** Connects a combo box with the target settings type*/
 	void EnhanceComboBox(QComboBox* combobox, emu_settings_type type, bool is_ranged = false, bool use_max = false, int max = 0, bool sorted = false);
@@ -56,7 +61,7 @@ public:
 	/** Connects a button group with the target settings type*/
 	void EnhanceRadioButton(QButtonGroup* button_group, emu_settings_type type);
 
-	std::vector<std::string> GetLoadedLibraries();
+	std::vector<std::string> GetLibrariesControl();
 	void SaveSelectedLibraries(const std::vector<std::string>& libs);
 
 	/** Returns the valid options for a given setting.*/
@@ -72,7 +77,7 @@ public:
 	void SetSetting(emu_settings_type type, const std::string& val);
 
 	/** Gets all the renderer info for gpu settings.*/
-	render_creator* m_render_creator;
+	render_creator* m_render_creator = nullptr;
 
 	/** Gets a list of all the microphones available.*/
 	microphone_creator m_microphone_creator;
@@ -90,7 +95,7 @@ public Q_SLOTS:
 	/** Writes the unsaved settings to file.  Used in settings dialog on accept.*/
 	void SaveSettings();
 private:
-	YAML::Node m_defaultSettings; // The default settings as a YAML node.
-	YAML::Node m_currentSettings; // The current settings as a YAML node.
+	YAML::Node m_default_settings; // The default settings as a YAML node.
+	YAML::Node m_current_settings; // The current settings as a YAML node.
 	std::string m_title_id;
 };

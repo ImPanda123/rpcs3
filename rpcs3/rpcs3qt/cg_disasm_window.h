@@ -1,9 +1,11 @@
-﻿#pragma once
+#pragma once
+
+#include "util/types.hpp"
 
 #include <QTextEdit>
 #include <QDropEvent>
 
-#include "stdafx.h"
+#include <memory>
 
 class AsmHighlighter;
 class GlslHighlighter;
@@ -15,14 +17,14 @@ class cg_disasm_window : public QWidget
 
 private Q_SLOTS:
 	void ShowContextMenu(const QPoint &pos);
+
+private:
 	void ShowDisasm();
 	bool IsValidFile(const QMimeData& md, bool save = false);
 
-private:
 	QString m_path_last;
 	QTextEdit* m_disasm_text;
 	QTextEdit* m_glsl_text;
-	QList<QUrl> m_urls;
 
 	QAction *openCgBinaryProgram;
 

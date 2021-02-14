@@ -1,10 +1,16 @@
-﻿#pragma once
+#pragma once
 
-#include <cmath>
 #include "pad_types.h"
 #include "pad_config.h"
 #include "pad_config_types.h"
-#include "Utilities/types.h"
+#include "util/types.hpp"
+
+#include <cmath>
+#include <functional>
+#include <string>
+#include <vector>
+#include <memory>
+#include <unordered_map>
 
 struct PadDevice
 {
@@ -62,7 +68,8 @@ protected:
 	std::array<bool, MAX_GAMEPADS> last_connection_status{{ false, false, false, false, false, false, false }};
 
 	std::string m_name_string;
-	size_t m_max_devices = 0;
+	u32 m_player_id = 0;
+	usz m_max_devices = 0;
 	int m_trigger_threshold = 0;
 	int m_thumb_threshold = 0;
 
@@ -132,12 +139,14 @@ public:
 	pad_handler m_type;
 
 	std::string name_string() const;
-	size_t max_devices() const;
+	usz max_devices() const;
 	bool has_config() const;
 	bool has_rumble() const;
 	bool has_deadzones() const;
 	bool has_led() const;
 	bool has_battery() const;
+
+	void set_player(u32 player_id) { m_player_id = player_id; }
 
 	static std::string get_config_dir(pad_handler type, const std::string& title_id = "");
 	static std::string get_config_filename(int i, const std::string& title_id = "");
@@ -170,7 +179,7 @@ private:
 	virtual void get_extended_info(const std::shared_ptr<PadDevice>& /*device*/, const std::shared_ptr<Pad>& /*pad*/) {};
 	virtual void apply_pad_data(const std::shared_ptr<PadDevice>& /*device*/, const std::shared_ptr<Pad>& /*pad*/) {};
 	virtual std::unordered_map<u64, u16> get_button_values(const std::shared_ptr<PadDevice>& /*device*/) { return {}; };
-	virtual pad_preview_values get_preview_values(std::unordered_map<u64, u16> /*data*/) { return {}; };
+	virtual pad_preview_values get_preview_values(const std::unordered_map<u64, u16>& /*data*/) { return {}; };
 
 protected:
 	virtual std::array<u32, PadHandlerBase::button::button_count> get_mapped_key_codes(const std::shared_ptr<PadDevice>& /*device*/, const pad_config* profile);

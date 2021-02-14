@@ -33,13 +33,13 @@ target_include_directories(rpcs3_emu
 # Utilities
 target_sources(rpcs3_emu PRIVATE
 	../util/atomic.cpp
-	../util/atomic2.cpp
 	../util/fixed_typemap.cpp
 	../util/logs.cpp
 	../util/yaml.cpp
 	../util/cereal.cpp
 	../util/vm_native.cpp
 	../util/dyn_lib.cpp
+	../util/sysinfo.cpp
 	../../Utilities/bin_patch.cpp
 	../../Utilities/cheat_info.cpp
 	../../Utilities/cond.cpp
@@ -51,7 +51,6 @@ target_sources(rpcs3_emu PRIVATE
 	../../Utilities/rXml.cpp
 	../../Utilities/sema.cpp
 	../../Utilities/StrFmt.cpp
-	../../Utilities/sysinfo.cpp
 	../../Utilities/Thread.cpp
 	../../Utilities/version.cpp
 )
@@ -75,6 +74,11 @@ else()
 	set_source_files_properties("../util/yaml.cpp" PROPERTIES COMPILE_FLAGS -fexceptions)
 endif()
 
+if (MSVC)
+	set_source_files_properties("../util/cereal.cpp" PROPERTIES COMPILE_FLAGS /GR)
+else()
+	set_source_files_properties("../util/cereal.cpp" PROPERTIES COMPILE_FLAGS -frtti)
+endif()
 
 # Crypto
 target_sources(rpcs3_emu PRIVATE
@@ -123,9 +127,12 @@ if(USE_PULSE AND PULSE_FOUND)
 	target_link_libraries(rpcs3_emu PUBLIC 3rdparty::pulse)
 endif()
 
-if(USE_FAUDIO AND SDL2_FOUND AND NOT SDL2_VERSION VERSION_LESS 2.0.9)
-	target_sources(rpcs3_emu PRIVATE Audio/FAudio/FAudioBackend.cpp)
-	target_link_libraries(rpcs3_emu PUBLIC 3rdparty::faudio)
+if(USE_FAUDIO)
+	find_package(SDL2)
+	if(SDL2_FOUND AND NOT SDL2_VERSION VERSION_LESS 2.0.9)
+		target_sources(rpcs3_emu PRIVATE Audio/FAudio/FAudioBackend.cpp)
+		target_link_libraries(rpcs3_emu PUBLIC 3rdparty::faudio)
+	endif()
 endif()
 
 if(WIN32)
@@ -359,6 +366,7 @@ target_sources(rpcs3_emu PRIVATE
 	Io/usb_device.cpp
 	Io/Skylander.cpp
 	Io/GHLtar.cpp
+	Io/Buzz.cpp
 )
 
 # Np
@@ -391,11 +399,14 @@ target_sources(rpcs3_emu PRIVATE
 	RSX/RSXTexture.cpp
 	RSX/RSXThread.cpp
 	RSX/rsx_utils.cpp
+	RSX/RSXDisAsm.cpp
 	RSX/Common/BufferUtils.cpp
 	RSX/Common/FragmentProgramDecompiler.cpp
+	RSX/Common/GLSLCommon.cpp
 	RSX/Common/ProgramStateCache.cpp
 	RSX/Common/surface_store.cpp
 	RSX/Common/TextureUtils.cpp
+	RSX/Common/texture_cache.cpp
 	RSX/Common/VertexProgramDecompiler.cpp
 	RSX/Null/NullGSRender.cpp
 	RSX/Overlays/overlay_animation.cpp
@@ -428,11 +439,25 @@ target_sources(rpcs3_emu PRIVATE
 	RSX/GL/GLTexture.cpp
 	RSX/GL/GLVertexBuffers.cpp
 	RSX/GL/GLVertexProgram.cpp
+	RSX/GL/GLTextureCache.cpp
 	RSX/GL/OpenGL.cpp
 )
 
 if(TARGET 3rdparty_vulkan)
 	target_sources(rpcs3_emu PRIVATE
+		RSX/VK/vkutils/barriers.cpp
+		RSX/VK/vkutils/buffer_object.cpp
+		RSX/VK/vkutils/chip_class.cpp
+		RSX/VK/vkutils/commands.cpp
+		RSX/VK/vkutils/data_heap.cpp
+		RSX/VK/vkutils/image.cpp
+		RSX/VK/vkutils/image_helpers.cpp
+		RSX/VK/vkutils/scratch.cpp
+		RSX/VK/vkutils/sync.cpp
+		RSX/VK/vkutils/memory.cpp
+		RSX/VK/vkutils/device.cpp
+		RSX/VK/vkutils/sampler.cpp
+		RSX/VK/vkutils/shared.cpp
 		RSX/VK/VKCommandStream.cpp
 		RSX/VK/VKCommonDecompiler.cpp
 		RSX/VK/VKDMA.cpp
@@ -454,6 +479,7 @@ if(TARGET 3rdparty_vulkan)
 		RSX/VK/VKTexture.cpp
 		RSX/VK/VKVertexBuffers.cpp
 		RSX/VK/VKVertexProgram.cpp
+		RSX/VK/VKTextureCache.cpp
 	)
 endif()
 

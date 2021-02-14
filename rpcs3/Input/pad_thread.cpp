@@ -1,8 +1,9 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "pad_thread.h"
 #include "product_info.h"
 #include "ds3_pad_handler.h"
 #include "ds4_pad_handler.h"
+#include "dualsense_pad_handler.h"
 #ifdef _WIN32
 #include "xinput_pad_handler.h"
 #include "mm_joystick_handler.h"
@@ -123,6 +124,9 @@ void pad_thread::Init()
 			case pad_handler::ds4:
 				cur_pad_handler = std::make_shared<ds4_pad_handler>();
 				break;
+			case pad_handler::dualsense:
+				cur_pad_handler = std::make_shared<dualsense_pad_handler>();
+				break;
 #ifdef _WIN32
 			case pad_handler::xinput:
 				cur_pad_handler = std::make_shared<xinput_pad_handler>();
@@ -141,6 +145,7 @@ void pad_thread::Init()
 			}
 			handlers.emplace(handler_type, cur_pad_handler);
 		}
+		cur_pad_handler->set_player(i);
 		cur_pad_handler->Init();
 
 		m_pads[i] = std::make_shared<Pad>(CELL_PAD_STATUS_DISCONNECTED, pad_settings[i].device_capability, pad_settings[i].device_type);

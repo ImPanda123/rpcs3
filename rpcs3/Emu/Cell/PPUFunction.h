@@ -2,6 +2,8 @@
 
 #include "PPUThread.h"
 
+#include "util/v128.hpp"
+
 using ppu_function_t = bool(*)(ppu_thread&);
 
 // BIND_FUNC macro "converts" any appropriate HLE function to ppu_function_t, binding it to PPU thread context.
@@ -11,6 +13,7 @@ using ppu_function_t = bool(*)(ppu_thread&);
 	ppu.current_function = #func;\
 	std::memcpy(ppu.syscall_args, ppu.gpr + 3, sizeof(ppu.syscall_args)); \
 	ppu_func_detail::do_call(ppu, func);\
+	static_cast<void>(ppu.test_stopped());\
 	ppu.current_function = old_f;\
 	ppu.cia += 4;\
 	__VA_ARGS__;\
@@ -196,7 +199,7 @@ namespace ppu_func_detail
 			is_variadic ? ARG_VARIADIC :
 			ARG_UNKNOWN;
 
-		const u32 g = g_count + (is_general || is_float ? 1 : is_vector ? ::align(g_count, 2) + 2 : 0);
+		const u32 g = g_count + (is_general || is_float ? 1 : is_vector ? (g_count & 1) + 2 : 0);
 		const u32 f = f_count + is_float;
 		const u32 v = v_count + is_vector;
 
@@ -254,7 +257,7 @@ class ppu_function_manager
 	};
 
 	// Access global function list
-	static std::vector<ppu_function_t>& access();
+	static std::vector<ppu_function_t>& access(bool ghc = false);
 
 	static u32 add_function(ppu_function_t function);
 
@@ -274,9 +277,19 @@ public:
 	}
 
 	// Read all registered functions
-	static inline const auto& get()
+	static inline const auto& get(bool llvm = false)
 	{
-		return access();
+		return access(llvm);
+	}
+
+	static inline u32 func_addr(u32 index)
+	{
+		if (index >= access().size() || !addr)
+		{
+			return 0;
+		}
+
+		return addr + index * 8;
 	}
 
 	// Allocation address

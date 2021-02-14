@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "sys_cond.h"
 
 #include "Emu/IdManager.h"
@@ -128,7 +128,7 @@ error_code sys_cond_signal_all(ppu_thread& ppu, u32 cond_id)
 			{
 				if (cond.mutex->try_own(*cpu, cpu->id))
 				{
-					verify(HERE), !std::exchange(result, cpu);
+					ensure(!std::exchange(result, cpu));
 				}
 			}
 
@@ -169,7 +169,7 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 			{
 				if (cpu->id == thread_id)
 				{
-					verify(HERE), cond.unqueue(cond.sq, cpu);
+					ensure(cond.unqueue(cond.sq, cpu));
 
 					cond.waiters--;
 
@@ -246,11 +246,16 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 		return CELL_EPERM;
 	}
 
-	while (!ppu.state.test_and_reset(cpu_flag::signal))
+	while (auto state = ppu.state.fetch_sub(cpu_flag::signal))
 	{
-		if (ppu.is_stopped())
+		if (is_stopped(state))
 		{
-			return 0;
+			return {};
+		}
+
+		if (state & cpu_flag::signal)
+		{
+			break;
 		}
 
 		if (timeout)
@@ -260,7 +265,7 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 				// Wait for rescheduling
 				if (ppu.check_state())
 				{
-					continue;
+					return {};
 				}
 
 				std::lock_guard lock(cond->mutex->mutex);
@@ -291,12 +296,12 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 		}
 		else
 		{
-			thread_ctrl::wait();
+			thread_ctrl::wait_on(ppu.state, state);
 		}
 	}
 
 	// Verify ownership
-	verify(HERE), cond->mutex->owner >> 1 == ppu.id;
+	ensure(cond->mutex->owner >> 1 == ppu.id);
 
 	// Restore the recursive value
 	cond->mutex->lock_count.release(static_cast<u32>(cond.ret));

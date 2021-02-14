@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "GSFrameBase.h"
 #include "Emu/RSX/RSXThread.h"
@@ -26,7 +26,6 @@ public:
 	GSRender();
 	~GSRender() override;
 
-	void on_init_rsx() override;
 	void on_init_thread() override;
 	void on_exit() override;
 

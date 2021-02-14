@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "sys_semaphore.h"
 
 #include "Emu/IdManager.h"
@@ -126,11 +126,16 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 
 	ppu.gpr[3] = CELL_OK;
 
-	while (!ppu.state.test_and_reset(cpu_flag::signal))
+	while (auto state = ppu.state.fetch_sub(cpu_flag::signal))
 	{
-		if (ppu.is_stopped())
+		if (is_stopped(state))
 		{
-			return 0;
+			return {};
+		}
+
+		if (state & cpu_flag::signal)
+		{
+			break;
 		}
 
 		if (timeout)
@@ -140,7 +145,7 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 				// Wait for rescheduling
 				if (ppu.check_state())
 				{
-					return 0;
+					return {};
 				}
 
 				std::lock_guard lock(sem->mutex);
@@ -150,13 +155,13 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 					break;
 				}
 
-				verify(HERE), 0 > sem->val.fetch_op([](s32& val)
+				ensure(0 > sem->val.fetch_op([](s32& val)
 				{
 					if (val < 0)
 					{
 						val++;
 					}
-				});
+				}));
 
 				ppu.gpr[3] = CELL_ETIMEDOUT;
 				break;
@@ -164,7 +169,7 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 		}
 		else
 		{
-			thread_ctrl::wait();
+			thread_ctrl::wait_on(ppu.state, state);
 		}
 	}
 
@@ -255,7 +260,7 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 
 		for (s32 i = 0; i < to_awake; i++)
 		{
-			sem->append(verify(HERE, sem->schedule<ppu_thread>(sem->sq, sem->protocol)));
+			sem->append((ensure(sem->schedule<ppu_thread>(sem->sq, sem->protocol))));
 		}
 
 		if (to_awake > 0)

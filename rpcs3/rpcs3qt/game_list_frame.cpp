@@ -1,4 +1,4 @@
-﻿#include "game_list_frame.h"
+#include "game_list_frame.h"
 #include "qt_utils.h"
 #include "settings_dialog.h"
 #include "pad_settings_dialog.h"
@@ -17,8 +17,9 @@
 #include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Loader/PSF.h"
-#include "Utilities/types.h"
+#include "util/types.hpp"
 #include "Utilities/lockless.h"
+#include "Utilities/File.h"
 #include "util/yaml.hpp"
 #include "Input/pad_thread.h"
 
@@ -27,6 +28,7 @@
 #include <memory>
 #include <set>
 #include <regex>
+#include <unordered_map>
 
 #include <QtConcurrent>
 #include <QDesktopServices>
@@ -1127,17 +1129,14 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	{
 		const QString custom_title = m_persistent_settings->GetValue(gui::persistent::titles, serial, "").toString();
 		const QString old_title = custom_title.isEmpty() ? name : custom_title;
-		QString new_title;
 
 		input_dialog dlg(128, old_title, tr("Rename Title"), tr("%0\n%1\n\nYou can clear the line in order to use the original title.").arg(name).arg(serial), name, this);
 		dlg.move(global_pos);
-		connect(&dlg, &input_dialog::text_changed, [&new_title](const QString& text)
-		{
-			new_title = text.simplified();
-		});
 
 		if (dlg.exec() == QDialog::Accepted)
 		{
+			const QString new_title = dlg.get_input_text().simplified();
+
 			if (new_title.isEmpty() || new_title == name)
 			{
 				m_titles.remove(serial);
@@ -1882,32 +1881,6 @@ bool game_list_frame::eventFilter(QObject *object, QEvent *event)
 				return true;
 			}
 		}
-	}
-	else if (event->type() == QEvent::ToolTip)
-	{
-		QHelpEvent *help_event = static_cast<QHelpEvent *>(event);
-		QTableWidgetItem* item;
-
-		if (m_is_list_layout)
-		{
-			item = m_game_list->itemAt(help_event->globalPos());
-		}
-		else
-		{
-			item = m_game_grid->itemAt(help_event->globalPos());
-		}
-
-		if (item && !item->toolTip().isEmpty() && (!m_is_list_layout || item->column() == gui::column_name || item->column() == gui::column_serial))
-		{
-			QToolTip::showText(help_event->globalPos(), item->toolTip());
-		}
-		else
-		{
-			QToolTip::hideText();
-			event->ignore();
-		}
-
-		return true;
 	}
 
 	return QDockWidget::eventFilter(object, event);

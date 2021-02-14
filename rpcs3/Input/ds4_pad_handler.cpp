@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "ds4_pad_handler.h"
 #include "Emu/Io/pad_config.h"
 
@@ -6,9 +6,6 @@ LOG_CHANNEL(ds4_log, "DS4");
 
 namespace
 {
-	const auto THREAD_SLEEP = 1ms; //ds4 has new data every ~4ms,
-	const auto THREAD_SLEEP_INACTIVE = 100ms;
-
 	const u32 DS4_ACC_RES_PER_G = 8192;
 	const u32 DS4_GYRO_RES_PER_DEG_S = 16; // technically this could be 1024, but keeping it at 16 keeps us within 16 bits of precision
 	const u32 DS4_FEATURE_REPORT_0x02_SIZE = 37;
@@ -213,7 +210,7 @@ void ds4_pad_handler::SetPadData(const std::string& padId, u32 largeMotor, u32 s
 	int index = 0;
 	for (uint i = 0; i < MAX_GAMEPADS; i++)
 	{
-		if (g_cfg_input.player[i]->handler == pad_handler::ds4)
+		if (g_cfg_input.player[i]->handler == m_type)
 		{
 			if (g_cfg_input.player[i]->device.to_string() == padId)
 			{
@@ -241,7 +238,7 @@ void ds4_pad_handler::SetPadData(const std::string& padId, u32 largeMotor, u32 s
 	}
 
 	// Start/Stop the engines :)
-	SendVibrateData(device);
+	send_output_report(device);
 }
 
 std::shared_ptr<ds4_pad_handler::DS4Device> ds4_pad_handler::GetDS4Device(const std::string& padId)
@@ -249,7 +246,7 @@ std::shared_ptr<ds4_pad_handler::DS4Device> ds4_pad_handler::GetDS4Device(const 
 	if (!Init())
 		return nullptr;
 
-	size_t pos = padId.find(m_name_string);
+	usz pos = padId.find(m_name_string);
 	if (pos == umax)
 		return nullptr;
 
@@ -383,9 +380,16 @@ std::unordered_map<u64, u16> ds4_pad_handler::get_button_values(const std::share
 	return keyBuffer;
 }
 
-pad_preview_values ds4_pad_handler::get_preview_values(std::unordered_map<u64, u16> data)
+pad_preview_values ds4_pad_handler::get_preview_values(const std::unordered_map<u64, u16>& data)
 {
-	return { data[L2], data[R2], data[LSXPos] - data[LSXNeg], data[LSYPos] - data[LSYNeg], data[RSXPos] - data[RSXNeg], data[RSYPos] - data[RSYNeg] };
+	return {
+		data.at(L2),
+		data.at(R2),
+		data.at(LSXPos) - data.at(LSXNeg),
+		data.at(LSYPos) - data.at(LSYNeg),
+		data.at(RSXPos) - data.at(RSXNeg),
+		data.at(RSYPos) - data.at(RSYNeg)
+	};
 }
 
 bool ds4_pad_handler::GetCalibrationData(const std::shared_ptr<DS4Device>& ds4Dev)
@@ -586,7 +590,7 @@ ds4_pad_handler::~ds4_pad_handler()
 			controller.second->largeVibrate = 0;
 			controller.second->led_delay_on = 0;
 			controller.second->led_delay_off = 0;
-			SendVibrateData(controller.second);
+			send_output_report(controller.second);
 
 			hid_close(controller.second->hidDevice);
 		}
@@ -597,13 +601,13 @@ ds4_pad_handler::~ds4_pad_handler()
 	}
 }
 
-int ds4_pad_handler::SendVibrateData(const std::shared_ptr<DS4Device>& device)
+int ds4_pad_handler::send_output_report(const std::shared_ptr<DS4Device>& device)
 {
 	if (!device)
 		return -2;
 
-	auto p_profile = device->config;
-	if (p_profile == nullptr)
+	auto config = device->config;
+	if (config == nullptr)
 		return -2; // hid_write and hid_write_control return -1 on error
 
 	std::array<u8, 78> outputBuf{0};
@@ -615,9 +619,9 @@ int ds4_pad_handler::SendVibrateData(const std::shared_ptr<DS4Device>& device)
 		outputBuf[3] = 0x07;
 		outputBuf[6] = device->smallVibrate;
 		outputBuf[7] = device->largeVibrate;
-		outputBuf[8] = p_profile->colorR; // red
-		outputBuf[9] = p_profile->colorG; // green
-		outputBuf[10] = p_profile->colorB; // blue
+		outputBuf[8]  = config->colorR; // red
+		outputBuf[9]  = config->colorG; // green
+		outputBuf[10] = config->colorB; // blue
 
 		// alternating blink states with values 0-255: only setting both to zero disables blinking
 		// 255 is roughly 2 seconds, so setting both values to 255 results in a 4 second interval
@@ -642,9 +646,9 @@ int ds4_pad_handler::SendVibrateData(const std::shared_ptr<DS4Device>& device)
 		outputBuf[1] = 0x07;
 		outputBuf[4] = device->smallVibrate;
 		outputBuf[5] = device->largeVibrate;
-		outputBuf[6] = p_profile->colorR; // red
-		outputBuf[7] = p_profile->colorG; // green
-		outputBuf[8] = p_profile->colorB; // blue
+		outputBuf[6] = config->colorR; // red
+		outputBuf[7] = config->colorG; // green
+		outputBuf[8] = config->colorB; // blue
 		outputBuf[9] = device->led_delay_on;
 		outputBuf[10] = device->led_delay_off;
 
@@ -714,7 +718,7 @@ std::vector<std::string> ds4_pad_handler::ListDevices()
 	if (!Init())
 		return ds4_pads_list;
 
-	for (size_t i = 1; i <= controllers.size(); ++i) // Controllers 1-n in GUI
+	for (usz i = 1; i <= controllers.size(); ++i) // Controllers 1-n in GUI
 	{
 		ds4_pads_list.emplace_back(m_name_string + std::to_string(i));
 	}
@@ -915,8 +919,7 @@ void ds4_pad_handler::get_extended_info(const std::shared_ptr<PadDevice>& device
 	pad->m_battery_level = ds4_device->batteryLevel;
 	pad->m_cable_state = ds4_device->cableState;
 
-	// these values come already calibrated from our ds4Thread,
-	// all we need to do is convert to ds3 range
+	// these values come already calibrated, all we need to do is convert to ds3 range
 
 	// accel
 	f32 accelX = static_cast<s16>((buf[20] << 8) | buf[19]) / static_cast<f32>(DS4_ACC_RES_PER_G) * -1;
@@ -949,22 +952,23 @@ void ds4_pad_handler::apply_pad_data(const std::shared_ptr<PadDevice>& device, c
 	if (!ds4_dev || !pad)
 		return;
 
-	auto profile = ds4_dev->config;
+	auto config = ds4_dev->config;
 
 	// Attempt to send rumble no matter what
-	int idx_l = profile->switch_vibration_motors ? 1 : 0;
-	int idx_s = profile->switch_vibration_motors ? 0 : 1;
+	const int idx_l = config->switch_vibration_motors ? 1 : 0;
+	const int idx_s  = config->switch_vibration_motors ? 0 : 1;
 
-	int speed_large = profile->enable_vibration_motor_large ? pad->m_vibrateMotors[idx_l].m_value : vibration_min;
-	int speed_small = profile->enable_vibration_motor_small ? pad->m_vibrateMotors[idx_s].m_value : vibration_min;
+	const int speed_large = config->enable_vibration_motor_large ? pad->m_vibrateMotors[idx_l].m_value : vibration_min;
+	const int speed_small  = config->enable_vibration_motor_small ? pad->m_vibrateMotors[idx_s].m_value : vibration_min;
 
-	bool wireless = ds4_dev->cableState < 1;
-	bool lowBattery = ds4_dev->batteryLevel < 2;
-	bool isBlinking = ds4_dev->led_delay_on > 0 || ds4_dev->led_delay_off > 0;
+	const bool wireless = ds4_dev->cableState < 1;
+	const bool lowBattery = ds4_dev->batteryLevel < 2;
+	const bool isBlinking  = ds4_dev->led_delay_on > 0 || ds4_dev->led_delay_off > 0;
+
 	bool newBlinkData = false;
 
 	// Blink LED when battery is low
-	if (ds4_dev->config->led_low_battery_blink)
+	if (config->led_low_battery_blink)
 	{
 		// we are now wired or have okay battery level -> stop blinking
 		if (isBlinking && !(wireless && lowBattery))
@@ -983,15 +987,15 @@ void ds4_pad_handler::apply_pad_data(const std::shared_ptr<PadDevice>& device, c
 	}
 
 	// Use LEDs to indicate battery level
-	if (ds4_dev->config->led_battery_indicator)
+	if (config->led_battery_indicator)
 	{
 		// This makes sure that the LED color doesn't update every 1ms. DS4 only reports battery level in 10% increments
 		if (ds4_dev->last_battery_level != ds4_dev->batteryLevel)
 		{
-			const u32 combined_color = get_battery_color(ds4_dev->batteryLevel, ds4_dev->config->led_battery_indicator_brightness);
-			ds4_dev->config->colorR.set(combined_color >> 8);
-			ds4_dev->config->colorG.set(combined_color & 0xff);
-			ds4_dev->config->colorB.set(0);
+			const u32 combined_color = get_battery_color(ds4_dev->batteryLevel, config->led_battery_indicator_brightness);
+			config->colorR.set(combined_color >> 8);
+			config->colorG.set(combined_color & 0xff);
+			config->colorB.set(0);
 		}
 	}
 
@@ -1000,7 +1004,7 @@ void ds4_pad_handler::apply_pad_data(const std::shared_ptr<PadDevice>& device, c
 	ds4_dev->largeVibrate = speed_large;
 	ds4_dev->smallVibrate = speed_small;
 
-	if (ds4_dev->newVibrateData && SendVibrateData(ds4_dev) >= 0)
+	if (ds4_dev->newVibrateData && send_output_report(ds4_dev) >= 0)
 	{
 		ds4_dev->newVibrateData = false;
 	}

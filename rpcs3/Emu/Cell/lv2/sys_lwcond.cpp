@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "sys_lwcond.h"
 
 #include "Emu/IdManager.h"
@@ -82,7 +82,7 @@ error_code _sys_lwcond_signal(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id, u6
 
 	if (mode < 1 || mode > 3)
 	{
-		fmt::throw_exception("Unknown mode (%d)" HERE, mode);
+		fmt::throw_exception("Unknown mode (%d)", mode);
 	}
 
 	const auto cond = idm::check<lv2_obj, lv2_lwcond>(lwcond_id, [&](lv2_lwcond& cond) -> int
@@ -129,7 +129,7 @@ error_code _sys_lwcond_signal(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id, u6
 
 				if (mode != 2)
 				{
-					verify(HERE), !mutex->signaled;
+					ensure(!mutex->signaled);
 					std::lock_guard lock(mutex->mutex);
 
 					if (mode == 3 && !mutex->sq.empty()) [[unlikely]]
@@ -140,7 +140,7 @@ error_code _sys_lwcond_signal(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id, u6
 					}
 					else if (mode == 1)
 					{
-						verify(HERE), mutex->add_waiter(result);
+						ensure(mutex->add_waiter(result));
 						result = nullptr;
 					}
 				}
@@ -193,7 +193,7 @@ error_code _sys_lwcond_signal_all(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 	if (mode < 1 || mode > 2)
 	{
-		fmt::throw_exception("Unknown mode (%d)" HERE, mode);
+		fmt::throw_exception("Unknown mode (%d)", mode);
 	}
 
 	bool need_awake = false;
@@ -229,9 +229,9 @@ error_code _sys_lwcond_signal_all(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 				if (mode == 1)
 				{
-					verify(HERE), !mutex->signaled;
+					ensure(!mutex->signaled);
 					std::lock_guard lock(mutex->mutex);
-					verify(HERE), mutex->add_waiter(cpu);
+					ensure(mutex->add_waiter(cpu));
 				}
 				else
 				{
@@ -332,11 +332,16 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		return CELL_ESRCH;
 	}
 
-	while (!ppu.state.test_and_reset(cpu_flag::signal))
+	while (auto state = ppu.state.fetch_sub(cpu_flag::signal))
 	{
-		if (ppu.is_stopped())
+		if (is_stopped(state))
 		{
-			return 0;
+			return {};
+		}
+
+		if (state & cpu_flag::signal)
+		{
+			break;
 		}
 
 		if (timeout)
@@ -346,7 +351,7 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 				// Wait for rescheduling
 				if (ppu.check_state())
 				{
-					return 0;
+					return {};
 				}
 
 				std::lock_guard lock(cond->mutex);
@@ -372,7 +377,7 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		}
 		else
 		{
-			thread_ctrl::wait();
+			thread_ctrl::wait_on(ppu.state, state);
 		}
 	}
 

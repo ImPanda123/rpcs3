@@ -1,6 +1,6 @@
-﻿#pragma once
+#pragma once
 
-#include "types.h"
+#include "util/types.hpp"
 #include "util/atomic.hpp"
 #include "util/shared_ptr.hpp"
 
@@ -10,9 +10,6 @@
 
 #include "mutex.h"
 #include "lockless.h"
-
-// Report error and call std::abort(), defined in main.cpp
-[[noreturn]] void report_fatal_error(const std::string&);
 
 // Hardware core layout
 enum class native_core_arrangement : u32
@@ -145,7 +142,7 @@ public:
 	u64 get_cycles();
 
 	// Wait for the thread (it does NOT change thread state, and can be called from multiple threads)
-	bool join() const;
+	bool join(bool dtor = false) const;
 
 	// Notify the thread
 	void notify();
@@ -237,6 +234,23 @@ public:
 		_wait_for(-1, true);
 	}
 
+	// Wait for both thread sync var and provided atomic var
+	template <typename T, atomic_wait::op op = atomic_wait::op::eq, typename U>
+	static inline void wait_on(T& wait, U old, u64 usec = -1)
+	{
+		auto _this = g_tls_this_thread;
+
+		if (_this->m_sync.bit_test_reset(2))
+		{
+			return;
+		}
+
+		atomic_wait::list<2> list{};
+		list.set<0, op>(wait, old);
+		list.set<1>(_this->m_sync, 0, 4 + 1);
+		list.wait(atomic_wait_timeout{usec <= 0xffff'ffff'ffff'ffff / 1000 ? usec * 1000 : 0xffff'ffff'ffff'ffff});
+	}
+
 	// Exit.
 	[[noreturn]] static void emergency_exit(std::string_view reason);
 
@@ -265,7 +279,25 @@ public:
 	static u64 get_thread_affinity_mask();
 
 	// Get current thread stack addr and size
-	static std::pair<void*, std::size_t> get_thread_stack();
+	static std::pair<void*, usz> get_thread_stack();
+
+	// Sets the native thread priority and returns it to zero at destructor
+	struct scoped_priority
+	{
+		explicit scoped_priority(int prio)
+		{
+			set_native_priority(prio);
+		}
+
+		scoped_priority(const scoped_priority&) = delete;
+
+		scoped_priority& operator=(const scoped_priority&) = delete;
+
+		~scoped_priority()
+		{
+			set_native_priority(0);
+		}
+	};
 
 private:
 	// Miscellaneous
@@ -375,8 +407,6 @@ public:
 	// Try to abort by assigning thread_state::aborting (UB if assigning different state)
 	named_thread& operator=(thread_state s)
 	{
-		ASSUME(s == thread_state::aborting);
-
 		if (s == thread_state::aborting && thread::m_sync.fetch_op([](u64& v){ return !(v & 3) && (v |= 1); }).second)
 		{
 			if (s == thread_state::aborting)
@@ -398,7 +428,7 @@ public:
 	{
 		// Assign aborting state forcefully
 		operator=(thread_state::aborting);
-		thread::join();
+		thread::join(true);
 
 		if constexpr (!result::empty)
 		{

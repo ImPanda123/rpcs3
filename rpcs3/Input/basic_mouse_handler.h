@@ -1,15 +1,14 @@
-﻿#pragma once
+#pragma once
 
-#include "stdafx.h"
+#include "util/types.hpp"
 #include "Emu/Io/MouseHandler.h"
 
 #include <QWindow>
 #include <QMouseEvent>
 #include <QWheelEvent>
 
-class basic_mouse_handler final : public QObject, public MouseHandlerBase
+class basic_mouse_handler final : public MouseHandlerBase, public QObject
 {
-	Q_OBJECT
 public:
 	virtual void Init(const u32 max_connect) override;
 

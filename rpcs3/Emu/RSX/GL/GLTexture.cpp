@@ -1,10 +1,12 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "GLTexture.h"
 #include "GLCompute.h"
 #include "GLRenderTargets.h"
 #include "../GCM.h"
 #include "../RSXThread.h"
 #include "../RSXTexture.h"
+
+#include "util/asm.hpp"
 
 namespace gl
 {
@@ -19,7 +21,7 @@ namespace gl
 		case rsx::texture_dimension_extended::texture_dimension_cubemap: return GL_TEXTURE_CUBE_MAP;
 		case rsx::texture_dimension_extended::texture_dimension_3d: return GL_TEXTURE_3D;
 		}
-		fmt::throw_exception("Unknown texture target" HERE);
+		fmt::throw_exception("Unknown texture target");
 	}
 
 	GLenum get_sized_internal_format(u32 texture_format)
@@ -54,7 +56,7 @@ namespace gl
 		case CELL_GCM_TEXTURE_COMPRESSED_B8R8_G8R8: return GL_RGBA8;
 		case CELL_GCM_TEXTURE_COMPRESSED_R8B8_R8G8: return GL_RGBA8;
 		}
-		fmt::throw_exception("Unknown texture format 0x%x" HERE, texture_format);
+		fmt::throw_exception("Unknown texture format 0x%x", texture_format);
 	}
 
 	std::tuple<GLenum, GLenum> get_format_type(u32 texture_format)
@@ -65,7 +67,7 @@ namespace gl
 		case CELL_GCM_TEXTURE_A1R5G5B5: return std::make_tuple(GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV);
 		case CELL_GCM_TEXTURE_A4R4G4B4: return std::make_tuple(GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4);
 		case CELL_GCM_TEXTURE_R5G6B5: return std::make_tuple(GL_RGB, GL_UNSIGNED_SHORT_5_6_5);
-		case CELL_GCM_TEXTURE_A8R8G8B8: return std::make_tuple(GL_BGRA, GL_UNSIGNED_INT_8_8_8_8);
+		case CELL_GCM_TEXTURE_A8R8G8B8: return std::make_tuple(GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV);
 		case CELL_GCM_TEXTURE_G8B8: return std::make_tuple(GL_RG, GL_UNSIGNED_BYTE);
 		case CELL_GCM_TEXTURE_R6G5B5: return std::make_tuple(GL_RGB, GL_UNSIGNED_SHORT_5_6_5);
 		case CELL_GCM_TEXTURE_DEPTH24_D8: return std::make_tuple(GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8);
@@ -79,7 +81,7 @@ namespace gl
 		case CELL_GCM_TEXTURE_W32_Z32_Y32_X32_FLOAT: return std::make_tuple(GL_RGBA, GL_FLOAT);
 		case CELL_GCM_TEXTURE_X32_FLOAT: return std::make_tuple(GL_RED, GL_FLOAT);
 		case CELL_GCM_TEXTURE_D1R5G5B5: return std::make_tuple(GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV);
-		case CELL_GCM_TEXTURE_D8R8G8B8: return std::make_tuple(GL_BGRA, GL_UNSIGNED_INT_8_8_8_8);
+		case CELL_GCM_TEXTURE_D8R8G8B8: return std::make_tuple(GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV);
 		case CELL_GCM_TEXTURE_Y16_X16_FLOAT: return std::make_tuple(GL_RG, GL_HALF_FLOAT);
 		case CELL_GCM_TEXTURE_COMPRESSED_DXT1: return std::make_tuple(GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_UNSIGNED_BYTE);
 		case CELL_GCM_TEXTURE_COMPRESSED_DXT23: return std::make_tuple(GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_UNSIGNED_BYTE);
@@ -89,7 +91,7 @@ namespace gl
 		case CELL_GCM_TEXTURE_COMPRESSED_B8R8_G8R8: return std::make_tuple(GL_BGRA, GL_UNSIGNED_BYTE);
 		case CELL_GCM_TEXTURE_COMPRESSED_R8B8_R8G8: return std::make_tuple(GL_BGRA, GL_UNSIGNED_BYTE);
 		}
-		fmt::throw_exception("Compressed or unknown texture format 0x%x" HERE, texture_format);
+		fmt::throw_exception("Compressed or unknown texture format 0x%x", texture_format);
 	}
 
 	pixel_buffer_layout get_format_type(texture::internal_format format)
@@ -132,7 +134,7 @@ namespace gl
 		case texture::internal_format::depth32f_stencil8:
 			return { GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, 4, true };
 		default:
-			fmt::throw_exception("Unexpected internal format 0x%X" HERE, static_cast<u32>(format));
+			fmt::throw_exception("Unexpected internal format 0x%X", static_cast<u32>(format));
 		}
 	}
 
@@ -231,7 +233,7 @@ namespace gl
 		case rsx::texture_minify_filter::linear_linear: return GL_LINEAR_MIPMAP_LINEAR;
 		case rsx::texture_minify_filter::convolution_min: return GL_LINEAR_MIPMAP_LINEAR;
 		}
-		fmt::throw_exception("Unknown min filter" HERE);
+		fmt::throw_exception("Unknown min filter");
 	}
 
 	int tex_mag_filter(rsx::texture_magnify_filter mag_filter)
@@ -242,7 +244,7 @@ namespace gl
 		case rsx::texture_magnify_filter::linear: return GL_LINEAR;
 		case rsx::texture_magnify_filter::convolution_mag: return GL_LINEAR;
 		}
-		fmt::throw_exception("Unknown mag filter" HERE);
+		fmt::throw_exception("Unknown mag filter");
 	}
 
 	// Apply sampler state settings
@@ -295,9 +297,7 @@ namespace gl
 			set_parameterf(GL_TEXTURE_MAX_LOD, tex.max_lod());
 		}
 
-		const int aniso_override_level = g_cfg.video.anisotropic_level_override;
-		const bool aniso_override = !g_cfg.video.strict_rendering_mode && aniso_override_level > 0;
-		const f32 af_level = aniso_override ? aniso_override_level : max_aniso(tex.max_aniso());
+		const f32 af_level = max_aniso(tex.max_aniso());
 		set_parameterf(GL_TEXTURE_MAX_ANISOTROPY_EXT, af_level);
 		set_parameteri(GL_TEXTURE_MAG_FILTER, tex_mag_filter(tex.mag_filter()));
 
@@ -392,7 +392,7 @@ namespace gl
 		case CELL_GCM_TEXTURE_COMPRESSED_DXT45:
 			return true;
 		}
-		fmt::throw_exception("Unknown format 0x%x" HERE, texture_format);
+		fmt::throw_exception("Unknown format 0x%x", texture_format);
 	}
 
 	std::array<GLenum, 4> get_swizzle_remap(u32 texture_format)
@@ -451,7 +451,7 @@ namespace gl
 		case CELL_GCM_TEXTURE_COMPRESSED_HILO_S8:
 			return{ GL_RED, GL_GREEN, GL_RED, GL_GREEN };
 		}
-		fmt::throw_exception("Unknown format 0x%x" HERE, texture_format);
+		fmt::throw_exception("Unknown format 0x%x", texture_format);
 	}
 
 	cs_shuffle_base* get_trivial_transform_job(const pixel_buffer_layout& pack_info)
@@ -503,7 +503,7 @@ namespace gl
 		}
 		else if (pack_info.type == GL_FLOAT)
 		{
-			verify(HERE), mem_info->image_size_in_bytes == (mem_info->image_size_in_texels * 4);
+			ensure(mem_info->image_size_in_bytes == (mem_info->image_size_in_texels * 4));
 			mem_info->memory_required = (mem_info->image_size_in_texels * 6);
 			initialize_scratch_mem();
 
@@ -513,7 +513,7 @@ namespace gl
 		}
 		else if (pack_info.type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV)
 		{
-			verify(HERE), mem_info->image_size_in_bytes == (mem_info->image_size_in_texels * 8);
+			ensure(mem_info->image_size_in_bytes == (mem_info->image_size_in_texels * 8));
 			mem_info->memory_required = (mem_info->image_size_in_texels * 12);
 			initialize_scratch_mem();
 
@@ -523,7 +523,7 @@ namespace gl
 		}
 		else
 		{
-			fmt::throw_exception("Invalid depth/stencil type 0x%x" HERE, pack_info.type);
+			fmt::throw_exception("Invalid depth/stencil type 0x%x", pack_info.type);
 		}
 
 		glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
@@ -590,7 +590,7 @@ namespace gl
 		}
 		else
 		{
-			fmt::throw_exception("Invalid depth/stencil type 0x%x" HERE, unpack_info.type);
+			fmt::throw_exception("Invalid depth/stencil type 0x%x", unpack_info.type);
 		}
 
 		if (!skip_barrier)
@@ -614,29 +614,13 @@ namespace gl
 		{
 			//Compressed formats have a 4-byte alignment
 			//TODO: Verify that samplers are not affected by the padding
-			width = align(width, 4);
-			height = align(height, 4);
+			width = utils::align(width, 4);
+			height = utils::align(height, 4);
 		}
 
-		GLenum target;
-		GLenum internal_format = get_sized_internal_format(gcm_format);
-		auto format_class = rsx::classify_format(gcm_format);
-
-		switch (type)
-		{
-		case rsx::texture_dimension_extended::texture_dimension_1d:
-			target = GL_TEXTURE_1D;
-			break;
-		case rsx::texture_dimension_extended::texture_dimension_2d:
-			target = GL_TEXTURE_2D;
-			break;
-		case rsx::texture_dimension_extended::texture_dimension_3d:
-			target = GL_TEXTURE_3D;
-			break;
-		case rsx::texture_dimension_extended::texture_dimension_cubemap:
-			target = GL_TEXTURE_CUBE_MAP;
-			break;
-		}
+		const GLenum target = get_target(type);
+		const GLenum internal_format = get_sized_internal_format(gcm_format);
+		const auto format_class = rsx::classify_format(gcm_format);
 
 		return new gl::viewable_image(target, width, height, depth, mipmaps, internal_format, format_class);
 	}
@@ -645,7 +629,7 @@ namespace gl
 			const std::vector<rsx::subresource_layout> &input_layouts,
 			bool is_swizzled, GLenum gl_format, GLenum gl_type, std::vector<std::byte>& staging_buffer)
 	{
-		rsx::texture_uploader_capabilities caps{ true, false, false, 4 };
+		rsx::texture_uploader_capabilities caps{ true, false, false, false, 4 };
 
 		pixel_unpack_settings unpack_settings;
 		unpack_settings.row_length(0).alignment(4);
@@ -654,7 +638,7 @@ namespace gl
 		{
 			caps.supports_vtc_decoding = gl::get_driver_caps().vendor_NVIDIA;
 
-			unpack_settings.row_length(align(dst->width(), 4));
+			unpack_settings.row_length(utils::align(dst->width(), 4));
 			unpack_settings.apply();
 
 			glBindTexture(static_cast<GLenum>(dst->get_target()), dst->id());
@@ -664,7 +648,7 @@ namespace gl
 			for (const rsx::subresource_layout& layout : input_layouts)
 			{
 				upload_texture_subresource(staging_buffer, layout, format, is_swizzled, caps);
-				const sizei image_size{ align(layout.width_in_texel, 4), align(layout.height_in_texel, 4) };
+				const sizei image_size{utils::align(layout.width_in_texel, 4), utils::align(layout.height_in_texel, 4)};
 
 				switch (dst->get_target())
 				{
@@ -694,8 +678,7 @@ namespace gl
 				}
 				default:
 				{
-					ASSUME(0);
-					fmt::throw_exception("Unreachable" HERE);
+					fmt::throw_exception("Unreachable");
 				}
 				}
 			}
@@ -715,11 +698,6 @@ namespace gl
 
 			switch (gl_type)
 			{
-			case GL_UNSIGNED_INT_8_8_8_8:
-				// NOTE: GL_UNSIGNED_INT_8_8_8_8 is already a swapped type
-				// TODO: Remove reliance on format and type checks when compute acceleration is implemented
-				apply_settings = false;
-				break;
 			case GL_BYTE:
 			case GL_UNSIGNED_BYTE:
 				// Multi-channel format uploaded one byte at a time. This is due to poor driver support for formats like GL_UNSIGNED SHORT_8_8
@@ -836,8 +814,8 @@ namespace gl
 	void upload_texture(texture* dst, u32 gcm_format, bool is_swizzled, const std::vector<rsx::subresource_layout>& subresources_layout)
 	{
 		// Calculate staging buffer size
-		const u32 aligned_pitch = align<u32>(dst->pitch(), 4);
-		size_t texture_data_sz = dst->depth() * dst->height() * aligned_pitch;
+		const u32 aligned_pitch = utils::align<u32>(dst->pitch(), 4);
+		usz texture_data_sz = dst->depth() * dst->height() * aligned_pitch;
 		std::vector<std::byte> data_upload_buf(texture_data_sz);
 
 		// TODO: GL drivers support byteswapping and this should be used instead of doing so manually
@@ -875,7 +853,7 @@ namespace gl
 		case GL_DEPTH32F_STENCIL8:
 			return 4;
 		default:
-			fmt::throw_exception("Unexpected internal format 0x%X" HERE, static_cast<u32>(format));
+			fmt::throw_exception("Unexpected internal format 0x%X", static_cast<u32>(format));
 		}
 	}
 
@@ -906,7 +884,7 @@ namespace gl
 		case GL_DEPTH32F_STENCIL8:
 			return { true, 4 };
 		default:
-			fmt::throw_exception("Unexpected internal format 0x%X" HERE, static_cast<u32>(format));
+			fmt::throw_exception("Unexpected internal format 0x%X", static_cast<u32>(format));
 		}
 	}
 

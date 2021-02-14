@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "rsx_methods.h"
 #include "RSXThread.h"
 #include "rsx_utils.h"
@@ -8,7 +8,6 @@
 #include "Emu/RSX/Common/BufferUtils.h"
 
 #include <thread>
-#include <atomic>
 
 namespace rsx
 {
@@ -26,7 +25,7 @@ namespace rsx
 		rsx->recover_fifo();
 	}
 
-	void trace_method(thread* rsx, u32 _reg, u32 arg)
+	static void trace_method(thread* rsx, u32 _reg, u32 arg)
 	{
 		// For unknown yet valid methods
 		rsx_log.trace("RSX method 0x%x (arg=0x%x)", _reg << 2, arg);
@@ -52,7 +51,7 @@ namespace rsx
 		void semaphore_acquire(thread* rsx, u32 /*_reg*/, u32 arg)
 		{
 			rsx->sync_point_request.release(true);
-			const u32 addr = get_address(method_registers.semaphore_offset_406e(), method_registers.semaphore_context_dma_406e(), HERE);
+			const u32 addr = get_address(method_registers.semaphore_offset_406e(), method_registers.semaphore_context_dma_406e());
 
 			const auto& sema = vm::_ref<RsxSemaphore>(addr).val;
 
@@ -78,25 +77,20 @@ namespace rsx
 			u64 start = get_system_time();
 			while (sema != arg)
 			{
-				if (Emu.IsStopped())
-					return;
-
-				// Wait for external pause events
-				if (rsx->external_interrupt_lock)
+				if (rsx->is_stopped())
 				{
-					rsx->wait_pause();
-					continue;
+					return;
 				}
 
 				if (const auto tdr = static_cast<u64>(g_cfg.video.driver_recovery_timeout))
 				{
-					if (Emu.IsPaused())
+					if (rsx->is_paused())
 					{
 						const u64 start0 = get_system_time();
 
-						while (Emu.IsPaused())
+						while (rsx->is_paused())
 						{
-							std::this_thread::sleep_for(1ms);
+							rsx->cpu_wait({});
 						}
 
 						// Reset
@@ -113,8 +107,7 @@ namespace rsx
 					}
 				}
 
-				rsx->on_semaphore_acquire_wait();
-				std::this_thread::yield();
+				rsx->cpu_wait({});
 			}
 
 			rsx->fifo_wake_delay();
@@ -143,7 +136,7 @@ namespace rsx
 				rsx->sync_point_request.release(true);
 			}
 
-			const u32 addr = get_address(offset, ctxt, HERE);
+			const u32 addr = get_address(offset, ctxt);
 
 			// TODO: Check if possible to write on reservations
 			if (rsx->label_addr >> 28 != addr >> 28)
@@ -202,7 +195,7 @@ namespace rsx
 
 			const u32 addr = rsx->iomap_table.get_addr(0xf100000 + (index * 0x40));
 
-			verify(HERE), addr != umax;
+			ensure(addr != umax);
 
 			vm::_ref<atomic_t<RsxNotify>>(addr).store(
 			{
@@ -231,7 +224,7 @@ namespace rsx
 				return;
 			}
 
-			vm::_ref<RsxSemaphore>(get_address(offset, method_registers.semaphore_context_dma_4097(), HERE)).val = arg;
+			vm::_ref<RsxSemaphore>(get_address(offset, method_registers.semaphore_context_dma_4097())).val = arg;
 		}
 
 		void back_end_write_semaphore_release(thread* rsx, u32 _reg, u32 arg)
@@ -250,7 +243,7 @@ namespace rsx
 			}
 
 			const u32 val = (arg & 0xff00ff00) | ((arg & 0xff) << 16) | ((arg >> 16) & 0xff);
-			vm::_ref<RsxSemaphore>(get_address(offset, method_registers.semaphore_context_dma_4097(), HERE)).val = val;
+			vm::_ref<RsxSemaphore>(get_address(offset, method_registers.semaphore_context_dma_4097())).val = val;
 		}
 
 		/**
@@ -262,13 +255,13 @@ namespace rsx
 		template<u32 id, u32 index, int count, int register_count, typename type>
 		void set_vertex_data_impl(thread* rsx, u32 arg)
 		{
-			static const size_t increment_per_array_index = (register_count * sizeof(type)) / sizeof(u32);
+			static const usz increment_per_array_index = (register_count * sizeof(type)) / sizeof(u32);
 
-			static const size_t attribute_index = index / increment_per_array_index;
-			static const size_t vertex_subreg = index % increment_per_array_index;
+			static const usz attribute_index = index / increment_per_array_index;
+			static const usz vertex_subreg = index % increment_per_array_index;
 
 			const auto vtype = vertex_data_type_from_element_type<type>::type;
-			verify(HERE), vtype != rsx::vertex_base_type::cmp;
+			ensure(vtype != rsx::vertex_base_type::cmp);
 
 			switch (vtype)
 			{
@@ -481,7 +474,7 @@ namespace rsx
 				stream_data_to_memory_swapped_u32<true>(&rsx::method_registers.transform_program[load_pos * 4 + index % 4]
 					, vm::base(rsx->fifo_ctrl->get_current_arg_ptr()), rcount, 4);
 
-				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty;
+				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_ucode_dirty;
 				rsx::method_registers.transform_program_load_set(load_pos + ((rcount + index % 4) / 4));
 				rsx->fifo_ctrl->skip_methods(count - 1);
 			}
@@ -491,7 +484,7 @@ namespace rsx
 		{
 			if (method_registers.registers[reg] != method_registers.register_previous_value)
 			{
-				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty;
+				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_ucode_dirty;
 			}
 		}
 
@@ -499,7 +492,7 @@ namespace rsx
 		{
 			if (method_registers.registers[reg] != method_registers.register_previous_value)
 			{
-				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty | rsx::pipeline_state::fragment_program_dirty;
+				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_state_dirty;
 			}
 		}
 
@@ -579,7 +572,7 @@ namespace rsx
 				return vm::addr_t(0);
 			}
 
-			return vm::cast(get_address(offset, location, HERE));
+			return vm::cast(get_address(offset, location));
 		}
 
 		void get_report(thread* rsx, u32 _reg, u32 arg)
@@ -683,7 +676,7 @@ namespace rsx
 
 		void set_shader_program_dirty(thread* rsx, u32, u32)
 		{
-			rsx->m_graphics_state |= rsx::pipeline_state::fragment_program_dirty;
+			rsx->m_graphics_state |= rsx::pipeline_state::fragment_program_ucode_dirty;
 		}
 
 		void set_surface_dirty_bit(thread* rsx, u32 reg, u32 arg)
@@ -863,7 +856,7 @@ namespace rsx
 
 				if (rsx->current_fp_metadata.referenced_textures_mask & (1 << index))
 				{
-					rsx->m_graphics_state |= rsx::pipeline_state::fragment_program_dirty;
+					rsx->m_graphics_state |= rsx::pipeline_state::fragment_program_state_dirty;
 				}
 			}
 		};
@@ -877,7 +870,7 @@ namespace rsx
 
 				if (rsx->current_vp_metadata.referenced_textures_mask & (1 << index))
 				{
-					rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty;
+					rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_state_dirty;
 				}
 			}
 		};
@@ -922,8 +915,8 @@ namespace rsx
 				{
 					// Bit cast - optimize to mem copy
 
-					const auto dst_address = get_address(dst_offset + (x * 4) + (out_pitch * y), dst_dma, HERE);
-					const auto src_address = get_address(src_offset, CELL_GCM_LOCATION_MAIN, HERE);
+					const auto dst_address = get_address(dst_offset + (x * 4) + (out_pitch * y), dst_dma);
+					const auto src_address = get_address(src_offset, CELL_GCM_LOCATION_MAIN);
 					const auto dst = vm::_ptr<u8>(dst_address);
 					const auto src = vm::_ptr<const u8>(src_address);
 
@@ -956,8 +949,8 @@ namespace rsx
 				}
 				case blit_engine::transfer_destination_format::r5g6b5:
 				{
-					const auto dst_address = get_address(dst_offset + (x * 2) + (y * out_pitch), dst_dma, HERE);
-					const auto src_address = get_address(src_offset, CELL_GCM_LOCATION_MAIN, HERE);
+					const auto dst_address = get_address(dst_offset + (x * 2) + (y * out_pitch), dst_dma);
+					const auto src_address = get_address(src_offset, CELL_GCM_LOCATION_MAIN);
 					const auto dst = vm::_ptr<u16>(dst_address);
 					const auto src = vm::_ptr<const u32>(src_address);
 
@@ -995,7 +988,7 @@ namespace rsx
 				}
 				default:
 				{
-					fmt::throw_exception("Unreachable" HERE);
+					fmt::throw_exception("Unreachable");
 				}
 				}
 
@@ -1043,7 +1036,7 @@ namespace rsx
 			if (in_w == 0 || in_h == 0)
 			{
 				// Input cant be an empty region
-				fmt::throw_exception("NV3089_IMAGE_IN_SIZE: Invalid blit dimensions passed (in_w=%d, in_h=%d)" HERE, in_w, in_h);
+				fmt::throw_exception("NV3089_IMAGE_IN_SIZE: Invalid blit dimensions passed (in_w=%d, in_h=%d)", in_w, in_h);
 			}
 
 			u16 clip_x = method_registers.blit_engine_clip_x();
@@ -1066,7 +1059,7 @@ namespace rsx
 
 			if (operation != rsx::blit_engine::transfer_operation::srccopy)
 			{
-				fmt::throw_exception("NV3089_IMAGE_IN_SIZE: unknown operation (%d)" HERE, static_cast<u8>(operation));
+				fmt::throw_exception("NV3089_IMAGE_IN_SIZE: unknown operation (%d)", static_cast<u8>(operation));
 			}
 
 			const u32 src_offset = method_registers.blit_engine_input_offset();
@@ -1147,8 +1140,8 @@ namespace rsx
 			const u32 in_offset = in_x * in_bpp + in_pitch * in_y;
 			const u32 out_offset = out_x * out_bpp + out_pitch * out_y;
 
-			const u32 src_address = get_address(src_offset, src_dma, HERE);
-			const u32 dst_address = get_address(dst_offset, dst_dma, HERE);
+			const u32 src_address = get_address(src_offset, src_dma);
+			const u32 dst_address = get_address(dst_offset, dst_dma);
 
 			const u32 src_line_length = (in_w * in_bpp);
 
@@ -1183,7 +1176,7 @@ namespace rsx
 			if (dst_color_format != rsx::blit_engine::transfer_destination_format::r5g6b5 &&
 				dst_color_format != rsx::blit_engine::transfer_destination_format::a8r8g8b8)
 			{
-				fmt::throw_exception("NV3089_IMAGE_IN_SIZE: unknown dst_color_format (%d)" HERE, static_cast<u8>(dst_color_format));
+				fmt::throw_exception("NV3089_IMAGE_IN_SIZE: unknown dst_color_format (%d)", static_cast<u8>(dst_color_format));
 			}
 
 			if (src_color_format != rsx::blit_engine::transfer_source_format::r5g6b5 &&
@@ -1197,7 +1190,7 @@ namespace rsx
 				else
 				{
 					// TODO: Support more formats
-					fmt::throw_exception("NV3089_IMAGE_IN_SIZE: unknown src_color_format (%d)" HERE, static_cast<u8>(src_color_format));
+					fmt::throw_exception("NV3089_IMAGE_IN_SIZE: unknown src_color_format (%d)", static_cast<u8>(src_color_format));
 				}
 			}
 
@@ -1511,8 +1504,8 @@ namespace rsx
 			u32 dst_dma = method_registers.nv0039_output_location();
 
 			const bool is_block_transfer = (in_pitch == out_pitch && out_pitch + 0u == line_length);
-			const auto read_address = get_address(src_offset, src_dma, HERE);
-			const auto write_address = get_address(dst_offset, dst_dma, HERE);
+			const auto read_address = get_address(src_offset, src_dma);
+			const auto write_address = get_address(dst_offset, dst_dma);
 			const auto read_length = in_pitch * (line_count - 1) + line_length;
 			const auto write_length = out_pitch * (line_count - 1) + line_length;
 
@@ -1593,7 +1586,7 @@ namespace rsx
 
 	void flip_command(thread* rsx, u32, u32 arg)
 	{
-		verify(HERE), rsx->isHLE;
+		ensure(rsx->isHLE);
 		rsx->reset();
 		rsx->request_emu_flip(arg);
 	}
@@ -1615,7 +1608,8 @@ namespace rsx
 				{ ppu_cmd::sleep, 0 }
 			});
 
-			thread_ctrl::notify(*rsx->intr_thread);
+			rsx->intr_thread->cmd_notify++;
+			rsx->intr_thread->cmd_notify.notify_one();
 		}
 	}
 
@@ -2655,7 +2649,7 @@ namespace rsx
 				result |= vertex_base_changed;
 				break;
 			default:
-				fmt::throw_exception("Unreachable" HERE);
+				fmt::throw_exception("Unreachable");
 			}
 		}
 
@@ -3138,6 +3132,7 @@ namespace rsx
 		bind<NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE, nv4097::set_zcull_pixel_count_enable>();
 		bind<NV4097_CLEAR_ZCULL_SURFACE, nv4097::clear_zcull>();
 		bind<NV4097_SET_DEPTH_TEST_ENABLE, nv4097::set_surface_options_dirty_bit>();
+		bind<NV4097_SET_DEPTH_FUNC, nv4097::set_surface_options_dirty_bit>();
 		bind<NV4097_SET_STENCIL_TEST_ENABLE, nv4097::set_surface_options_dirty_bit>();
 		bind<NV4097_SET_DEPTH_MASK, nv4097::set_surface_options_dirty_bit>();
 		bind<NV4097_SET_COLOR_MASK, nv4097::set_surface_options_dirty_bit>();
@@ -3155,6 +3150,10 @@ namespace rsx
 		bind<NV4097_WAIT_FOR_IDLE, nv4097::sync>();
 		bind<NV4097_INVALIDATE_L2, nv4097::set_shader_program_dirty>();
 		bind<NV4097_SET_SHADER_PROGRAM, nv4097::set_shader_program_dirty>();
+		bind<NV4097_SET_SHADER_CONTROL, nv4097::notify_state_changed<fragment_program_state_dirty>>();
+		bind_array<NV4097_SET_TEX_COORD_CONTROL, 1, 10, nv4097::notify_state_changed<fragment_program_state_dirty>>();
+		bind<NV4097_SET_TWO_SIDE_LIGHT_EN, nv4097::notify_state_changed<fragment_program_state_dirty>>();
+		bind<NV4097_SET_POINT_SPRITE_CONTROL, nv4097::notify_state_changed<fragment_program_state_dirty>>();
 		bind<NV4097_SET_TRANSFORM_PROGRAM_START, nv4097::set_transform_program_start>();
 		bind<NV4097_SET_VERTEX_ATTRIB_OUTPUT_MASK, nv4097::set_vertex_attribute_output_mask>();
 		bind<NV4097_SET_VERTEX_DATA_BASE_OFFSET, nv4097::set_vertex_base_offset>();

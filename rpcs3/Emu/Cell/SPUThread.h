@@ -1,12 +1,14 @@
-﻿#pragma once
+#pragma once
 
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/Cell/SPUInterpreter.h"
 #include "Emu/Memory/vm.h"
 #include "MFC.h"
-#include "Utilities/BEType.h"
 
 #include <map>
+#include "util/v128.hpp"
+#include "util/logs.hpp"
+#include "util/to_endian.hpp"
 
 LOG_CHANNEL(spu_log, "SPU");
 
@@ -303,7 +305,7 @@ public:
 				return -1;
 			}
 
-			data.wait(bit_wait);
+			thread_ctrl::wait_on(data, bit_wait);
 		}
 	}
 
@@ -343,7 +345,7 @@ public:
 				return false;
 			}
 
-			data.wait(state);
+			thread_ctrl::wait_on(data, state);
 		}
 	}
 
@@ -503,7 +505,7 @@ struct spu_imm_table_t
 	public:
 		scale_table_t();
 
-		FORCE_INLINE __m128 operator [] (s32 scale) const
+		FORCE_INLINE const auto& operator [](s32 scale) const
 		{
 			return m_data[scale + 155].vf;
 		}
@@ -568,7 +570,7 @@ public:
 			return this->_u32[3] >> 10 & 0x3;
 
 		default:
-			fmt::throw_exception("Unexpected slice value (%d)" HERE, slice);
+			fmt::throw_exception("Unexpected slice value (%d)", slice);
 		}
 	}
 
@@ -624,7 +626,6 @@ enum class spu_type : u32
 class spu_thread : public cpu_thread
 {
 public:
-	virtual std::string dump_all() const override;
 	virtual std::string dump_regs() const override;
 	virtual std::string dump_callstack() const override;
 	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
@@ -632,6 +633,7 @@ public:
 	virtual void cpu_task() override final;
 	virtual void cpu_return() override;
 	virtual ~spu_thread() override;
+	void cleanup();
 	void cpu_init();
 
 	static const u32 id_base = 0x02000000; // TODO (used to determine thread type)

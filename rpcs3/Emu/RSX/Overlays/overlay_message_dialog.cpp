@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "overlay_message_dialog.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
@@ -320,6 +320,22 @@ namespace rsx
 
 			if (index == static_cast<u32>(taskbar_index) || taskbar_index == -1)
 				Emu.GetCallbacks().handle_taskbar_progress(1, static_cast<s32>(value));
+
+			return CELL_OK;
+		}
+
+		error_code message_dialog::progress_bar_set_value(u32 index, f32 value)
+		{
+			if (index >= num_progress_bars)
+				return CELL_MSGDIALOG_ERROR_PARAM;
+
+			if (index == 0)
+				progress_1.set_value(value);
+			else
+				progress_2.set_value(value);
+
+			if (index == static_cast<u32>(taskbar_index) || taskbar_index == -1)
+				Emu.GetCallbacks().handle_taskbar_progress(3, static_cast<s32>(value));
 
 			return CELL_OK;
 		}

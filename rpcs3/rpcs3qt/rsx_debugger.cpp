@@ -1,7 +1,6 @@
-﻿#include "rsx_debugger.h"
+#include "rsx_debugger.h"
 #include "gui_settings.h"
 #include "qt_utils.h"
-#include "memory_viewer_panel.h"
 #include "table_item_delegate.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/RSX/gcm_printing.h"
@@ -9,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QFont>
+#include <QFontDatabase>
 #include <QPixmap>
 #include <QPushButton>
 #include <QKeyEvent>
@@ -38,7 +38,7 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	setObjectName("rsx_debugger");
 	setWindowFlags(Qt::Window);
 
-	//Fonts and Colors
+	// Fonts and Colors
 	QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
 	mono.setPointSize(8);
 	QLabel l("000000000"); // hacky way to get the lineedit to resize properly
@@ -48,8 +48,9 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	m_addr_line = new QLineEdit();
 	m_addr_line->setFont(mono);
 	m_addr_line->setPlaceholderText("00000000");
-	m_addr_line->setMaxLength(8);
+	m_addr_line->setMaxLength(18);
 	m_addr_line->setFixedWidth(l.sizeHint().width());
+	m_addr_line->setValidator(new QRegExpValidator(QRegExp("^(0[xX])?0*[a-fA-F0-9]{0,8}$")));
 	setFocusProxy(m_addr_line);
 
 	QHBoxLayout* hbox_controls_addr = new QHBoxLayout();
@@ -109,7 +110,7 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	m_tw_rsx = new QTabWidget();
 
 	// adds a tab containing a list to the tabwidget
-	auto l_addRSXTab = [=, this](QTableWidget* table, const QString& tabname, int columns)
+	const auto add_rsx_tab = [this, &mono](QTableWidget* table, const QString& tabname, int columns)
 	{
 		table = new QTableWidget();
 		table->setItemDelegate(new table_item_delegate);
@@ -134,9 +135,9 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 		m_addr = render->ctrl->get;
 	}
 
-	m_list_commands = l_addRSXTab(m_list_commands, tr("RSX Commands"), 4);
-	m_list_captured_frame = l_addRSXTab(m_list_captured_frame, tr("Captured Frame"), 1);
-	m_list_captured_draw_calls = l_addRSXTab(m_list_captured_draw_calls, tr("Captured Draw Calls"), 1);
+	m_list_commands            = add_rsx_tab(m_list_commands, tr("RSX Commands"), 4);
+	m_list_captured_frame      = add_rsx_tab(m_list_captured_frame, tr("Captured Frame"), 1);
+	m_list_captured_draw_calls = add_rsx_tab(m_list_captured_draw_calls, tr("Captured Draw Calls"), 1);
 
 	// Tabs: List Columns
 	m_list_commands->viewport()->installEventFilter(this);
@@ -171,7 +172,7 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	m_list_index_buffer = new QListWidget();
 	m_list_index_buffer->setFont(mono);
 
-	//Panels for displaying the buffers
+	// Panels for displaying the buffers
 	m_buffer_colorA  = new Buffer(false, 0, tr("Color Buffer A"), this);
 	m_buffer_colorB  = new Buffer(false, 1, tr("Color Buffer B"), this);
 	m_buffer_colorC  = new Buffer(false, 2, tr("Color Buffer C"), this);
@@ -180,7 +181,7 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	m_buffer_stencil = new Buffer(false, 4, tr("Stencil Buffer"), this);
 	m_buffer_tex     = new Buffer(true, 4, tr("Texture"), this);
 
-	//Merge and display everything
+	// Merge and display everything
 	QVBoxLayout* vbox_buffers1 = new QVBoxLayout();
 	vbox_buffers1->addWidget(m_buffer_colorA);
 	vbox_buffers1->addWidget(m_buffer_colorC);
@@ -213,7 +214,7 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	main_layout->addWidget(state_rsx, 1);
 	setLayout(main_layout);
 
-	//Events
+	// Events
 	connect(b_goto_get, &QAbstractButton::clicked, [this]()
 	{
 		if (const auto render = rsx::get_current_renderer(); render && render->ctrl &&
@@ -234,8 +235,10 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	});
 	connect(m_addr_line, &QLineEdit::returnPressed, [this]()
 	{
-		bool ok;
-		m_addr = m_addr_line->text().toULong(&ok, 16);
+		bool ok = false;
+		const u32 addr = static_cast<u32>(m_addr_line->text().toULong(&ok, 16));
+
+		if (ok) m_addr = addr;
 		UpdateInformation();
 	});
 	connect(m_list_captured_draw_calls, &QTableWidget::itemClicked, this, &rsx_debugger::OnClickDrawCalls);
@@ -255,7 +258,6 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 
 rsx_debugger::~rsx_debugger()
 {
-	exit = true;
 }
 
 void rsx_debugger::closeEvent(QCloseEvent* event)
@@ -273,11 +275,12 @@ void rsx_debugger::closeEvent(QCloseEvent* event)
 
 void rsx_debugger::keyPressEvent(QKeyEvent* event)
 {
-	if(isActiveWindow())
+	if (isActiveWindow())
 	{
-		switch(event->key())
+		switch (event->key())
 		{
 		case Qt::Key_F5: UpdateInformation(); break;
+		default: break;
 		}
 	}
 
@@ -304,12 +307,13 @@ bool rsx_debugger::eventFilter(QObject* object, QEvent* event)
 		case QEvent::Wheel:
 		{
 			QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
-			QPoint numSteps = wheelEvent->angleDelta() / 8 / 15; // http://doc.qt.io/qt-5/qwheelevent.html#pixelDelta
-			int steps = numSteps.y();
-			int item_count = m_list_commands->rowCount();
-			int step_size = wheelEvent->modifiers() & Qt::ControlModifier ? item_count : 1;
+			const QPoint numSteps = wheelEvent->angleDelta() / 8 / 15; // http://doc.qt.io/qt-5/qwheelevent.html#pixelDelta
+			const int steps = numSteps.y();
+			const int item_count = m_list_commands->rowCount();
+			const int step_size = wheelEvent->modifiers() & Qt::ControlModifier ? item_count : 1;
 			m_addr -= step_size * 4 * steps;
 			UpdateInformation();
+			break;
 		}
 		default:
 			break;
@@ -357,7 +361,7 @@ void Buffer::showImage(const QImage& image)
 		return;
 
 	m_image = image;
-	QImage scaled = m_image.scaled(m_image_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+	const QImage scaled = m_image.scaled(m_image_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 	m_canvas->setPixmap(QPixmap::fromImage(scaled));
 
 	QHBoxLayout* new_layout = new QHBoxLayout();
@@ -385,65 +389,78 @@ void Buffer::ShowWindowed()
 
 	gui::utils::show_windowed_image(m_image, title());
 
-	if (m_isTex)
-	{
-		/*	u8 location = render->textures[m_cur_texture].location();
-			if(location <= 1 && vm::check_addr(rsx::get_address(render->textures[m_cur_texture].offset(), location, HERE))
-				&& render->textures[m_cur_texture].width() && render->textures[m_cur_texture].height())
-				memory_viewer_panel::ShowImage(this,
-					rsx::get_address(render->textures[m_cur_texture].offset(), location, HERE), 1,
-					render->textures[m_cur_texture].width(),
-					render->textures[m_cur_texture].height(), false);*/
-	}
+	//if (m_isTex)
+	//{
+	//	u8 location = render->textures[m_cur_texture].location();
+	//	if (location <= 1 && vm::check_addr(rsx::get_address(render->textures[m_cur_texture].offset(), location))
+	//		&& render->textures[m_cur_texture].width() && render->textures[m_cur_texture].height())
+	//		memory_viewer_panel::ShowImage(this,
+	//			rsx::get_address(render->textures[m_cur_texture].offset(), location), 1,
+	//			render->textures[m_cur_texture].width(),
+	//			render->textures[m_cur_texture].height(), false);
+	//}
 	return;
 }
 
 namespace
 {
-	std::array<u8, 3> get_value(gsl::span<const std::byte> orig_buffer, rsx::surface_color_format format, size_t idx)
+	f32 f16_to_f32(f16 val)
+	{
+		// See http://stackoverflow.com/a/26779139
+		// The conversion doesn't handle NaN/Inf
+
+		const u16 _u16 = static_cast<u16>(val);
+		const u32 raw = ((_u16 & 0x8000) << 16) |             // Sign (just moved)
+				  (((_u16 & 0x7c00) + 0x1C000) << 13) | // Exponent ( exp - 15 + 127)
+				  ((_u16 & 0x03FF) << 13);              // Mantissa
+
+		return std::bit_cast<f32>(raw);
+	}
+
+	std::array<u8, 3> get_value(gsl::span<const std::byte> orig_buffer, rsx::surface_color_format format, usz idx)
 	{
 		switch (format)
 		{
 		case rsx::surface_color_format::b8:
 		{
-			u8 value = as_const_span<const u8>(orig_buffer)[idx];
+			const u8 value = as_const_span<const u8>(orig_buffer)[idx];
 			return{ value, value, value };
 		}
 		case rsx::surface_color_format::x32:
 		{
-			be_t<u32> stored_val = as_const_span<const be_t<u32>>(orig_buffer)[idx];
-			u32 swapped_val = stored_val;
-			f32 float_val = std::bit_cast<f32>(swapped_val);
-			u8 val = float_val * 255.f;
+			const be_t<u32> stored_val = as_const_span<const be_t<u32>>(orig_buffer)[idx];
+			const u32 swapped_val = stored_val;
+			const f32 float_val = std::bit_cast<f32>(swapped_val);
+			const u8 val = float_val * 255.f;
 			return{ val, val, val };
 		}
 		case rsx::surface_color_format::a8b8g8r8:
 		case rsx::surface_color_format::x8b8g8r8_o8b8g8r8:
 		case rsx::surface_color_format::x8b8g8r8_z8b8g8r8:
 		{
-			auto ptr = as_const_span<const u8>(orig_buffer);
+			const auto ptr = as_const_span<const u8>(orig_buffer);
 			return{ ptr[1 + idx * 4], ptr[2 + idx * 4], ptr[3 + idx * 4] };
 		}
 		case rsx::surface_color_format::a8r8g8b8:
 		case rsx::surface_color_format::x8r8g8b8_o8r8g8b8:
 		case rsx::surface_color_format::x8r8g8b8_z8r8g8b8:
 		{
-			auto ptr = as_const_span<const u8>(orig_buffer);
+			const auto ptr = as_const_span<const u8>(orig_buffer);
 			return{ ptr[3 + idx * 4], ptr[2 + idx * 4], ptr[1 + idx * 4] };
 		}
 		case rsx::surface_color_format::w16z16y16x16:
 		{
-			auto ptr = as_const_span<const u16>(orig_buffer);
-			f16 h0 = f16(ptr[4 * idx]);
-			f16 h1 = f16(ptr[4 * idx + 1]);
-			f16 h2 = f16(ptr[4 * idx + 2]);
-			f32 f0 = float(h0);
-			f32 f1 = float(h1);
-			f32 f2 = float(h2);
+			const auto ptr = as_const_span<const u16>(orig_buffer);
+			const f16 h0 = f16(ptr[4 * idx]);
+			const f16 h1 = f16(ptr[4 * idx + 1]);
+			const f16 h2 = f16(ptr[4 * idx + 2]);
+			const f32 f0 = f16_to_f32(h0);
+			const f32 f1 = f16_to_f32(h1);
+			const f32 f2 = f16_to_f32(h2);
 
-			u8 val0 = f0 * 255.;
-			u8 val1 = f1 * 255.;
-			u8 val2 = f2 * 255.;
+			const u8 val0 = f0 * 255.;
+			const u8 val1 = f1 * 255.;
+			const u8 val2 = f2 * 255.;
 			return{ val0, val1, val2 };
 		}
 		case rsx::surface_color_format::g8b8:
@@ -452,14 +469,14 @@ namespace
 		case rsx::surface_color_format::x1r5g5b5_z1r5g5b5:
 		case rsx::surface_color_format::w32z32y32x32:
 		default:
-			fmt::throw_exception("Unsupported format for display" HERE);
+			fmt::throw_exception("Unsupported format for display");
 		}
 	}
 
 	/**
 	 * Return a new buffer that can be passed to QImage.
 	 */
-	u8* convert_to_QImage_buffer(rsx::surface_color_format format, gsl::span<const std::byte> orig_buffer, size_t width, size_t height) noexcept
+	u8* convert_to_QImage_buffer(rsx::surface_color_format format, gsl::span<const std::byte> orig_buffer, usz width, usz height) noexcept
 	{
 		u8* buffer = static_cast<u8*>(std::malloc(width * height * 4));
 		for (u32 i = 0; i < width * height; i++)
@@ -477,7 +494,7 @@ namespace
 
 void rsx_debugger::OnClickDrawCalls()
 {
-	size_t draw_id = m_list_captured_draw_calls->currentRow();
+	const usz draw_id = m_list_captured_draw_calls->currentRow();
 
 	const auto& draw_call = frame_debug.draw_calls[draw_id];
 
@@ -489,10 +506,10 @@ void rsx_debugger::OnClickDrawCalls()
 		m_buffer_colorD,
 	};
 
-	u32 width = draw_call.state.surface_clip_width();
-	u32 height = draw_call.state.surface_clip_height();
+	const u32 width = draw_call.state.surface_clip_width();
+	const u32 height = draw_call.state.surface_clip_height();
 
-	for (size_t i = 0; i < 4; i++)
+	for (usz i = 0; i < 4; i++)
 	{
 		if (width && height && !draw_call.color_buffer[i].empty())
 		{
@@ -506,7 +523,7 @@ void rsx_debugger::OnClickDrawCalls()
 		if (width && height && !draw_call.depth_stencil[0].empty())
 		{
 			gsl::span<const std::byte> orig_buffer = draw_call.depth_stencil[0];
-			u8* buffer = static_cast<u8*>(std::malloc(width * height * 4));
+			u8* buffer = static_cast<u8*>(std::malloc(4ULL * width * height));
 
 			if (draw_call.state.surface_depth_fmt() == rsx::surface_depth_format::z24s8)
 			{
@@ -514,8 +531,8 @@ void rsx_debugger::OnClickDrawCalls()
 				{
 					for (u32 col = 0; col < width; col++)
 					{
-						u32 depth_val = as_const_span<const u32>(orig_buffer)[row * width + col];
-						u8 displayed_depth_val = 255 * depth_val / 0xFFFFFF;
+						const u32 depth_val = as_const_span<const u32>(orig_buffer)[row * width + col];
+						const u8 displayed_depth_val = 255 * depth_val / 0xFFFFFF;
 						buffer[4 * col + 0 + width * row * 4] = displayed_depth_val;
 						buffer[4 * col + 1 + width * row * 4] = displayed_depth_val;
 						buffer[4 * col + 2 + width * row * 4] = displayed_depth_val;
@@ -529,8 +546,8 @@ void rsx_debugger::OnClickDrawCalls()
 				{
 					for (u32 col = 0; col < width; col++)
 					{
-						u16 depth_val = as_const_span<const u16>(orig_buffer)[row * width + col];
-						u8 displayed_depth_val = 255 * depth_val / 0xFFFF;
+						const u16 depth_val = as_const_span<const u16>(orig_buffer)[row * width + col];
+						const u8 displayed_depth_val = 255 * depth_val / 0xFFFF;
 						buffer[4 * col + 0 + width * row * 4] = displayed_depth_val;
 						buffer[4 * col + 1 + width * row * 4] = displayed_depth_val;
 						buffer[4 * col + 2 + width * row * 4] = displayed_depth_val;
@@ -547,13 +564,13 @@ void rsx_debugger::OnClickDrawCalls()
 		if (width && height && !draw_call.depth_stencil[1].empty())
 		{
 			gsl::span<const std::byte> orig_buffer = draw_call.depth_stencil[1];
-			u8* buffer = static_cast<u8*>(std::malloc(width * height * 4));
+			u8* buffer = static_cast<u8*>(std::malloc(4ULL * width * height));
 
 			for (u32 row = 0; row < height; row++)
 			{
 				for (u32 col = 0; col < width; col++)
 				{
-					u8 stencil_val = as_const_span<const u8>(orig_buffer)[row * width + col];
+					const u8 stencil_val = as_const_span<const u8>(orig_buffer)[row * width + col];
 					buffer[4 * col + 0 + width * row * 4] = stencil_val;
 					buffer[4 * col + 1 + width * row * 4] = stencil_val;
 					buffer[4 * col + 2 + width * row * 4] = stencil_val;
@@ -628,11 +645,12 @@ void rsx_debugger::GetMemory()
 	}
 
 	std::string dump;
+	u32 cmd_i = 0;
 
-	for (u32 i = 0; i < frame_debug.command_queue.size(); i++)
+	for (const auto& command : frame_debug.command_queue)
 	{
-		const std::string& str = rsx::get_pretty_printing_function(frame_debug.command_queue[i].first)(frame_debug.command_queue[i].second);
-		m_list_captured_frame->setItem(i, 0, new QTableWidgetItem(qstr(str)));
+		const std::string str = rsx::get_pretty_printing_function(command.first)(command.first, command.second);
+		m_list_captured_frame->setItem(cmd_i++, 0, new QTableWidgetItem(qstr(str)));
 
 		dump += str;
 		dump += '\n';
@@ -657,27 +675,27 @@ void rsx_debugger::GetBuffers()
 	for (u32 bufferId=0; bufferId < render->display_buffers_count; bufferId++)
 	{
 		auto buffers = render->display_buffers;
-		u32 RSXbuffer_addr = rsx::constants::local_mem_base + buffers[bufferId].offset;
+		const u32 rsx_buffer_addr = rsx::constants::local_mem_base + buffers[bufferId].offset;
 
 		const u32 width  = buffers[bufferId].width;
 		const u32 height = buffers[bufferId].height;
 
-		if (!vm::check_addr(RSXbuffer_addr, vm::page_readable, width * height * 4))
+		if (!vm::check_addr(rsx_buffer_addr, vm::page_readable, width * height * 4))
 			continue;
 
-		const auto RSXbuffer = vm::get_super_ptr<const u8>(RSXbuffer_addr);
+		const auto rsx_buffer = vm::get_super_ptr<const u8>(rsx_buffer_addr);
 
-		u8* buffer = static_cast<u8*>(std::malloc(width * height * 4));
+		u8* buffer = static_cast<u8*>(std::malloc(4ULL * width * height));
 
 		// ABGR to ARGB and flip vertically
-		for (u32 y=0; y<height; y++)
+		for (u32 y = 0; y < height; y++)
 		{
-			for (u32 i=0, j=0; j<width*4; i+=4, j+=4)
+			for (u32 i = 0, j = 0; j < width * 4; i += 4, j += 4)
 			{
-				buffer[i+0 + y*width*4] = RSXbuffer[j+1 + (height-y-1)*width*4];	//B
-				buffer[i+1 + y*width*4] = RSXbuffer[j+2 + (height-y-1)*width*4];	//G
-				buffer[i+2 + y*width*4] = RSXbuffer[j+3 + (height-y-1)*width*4];	//R
-				buffer[i+3 + y*width*4] = RSXbuffer[j+0 + (height-y-1)*width*4];	//A
+				buffer[i + 0 + y * width * 4] = rsx_buffer[j + 1 + (height - y - 1) * width * 4]; // B
+				buffer[i + 1 + y * width * 4] = rsx_buffer[j + 2 + (height - y - 1) * width * 4]; // G
+				buffer[i + 2 + y * width * 4] = rsx_buffer[j + 3 + (height - y - 1) * width * 4]; // R
+				buffer[i + 3 + y * width * 4] = rsx_buffer[j + 0 + (height - y - 1) * width * 4]; // A
 			}
 		}
 
@@ -694,145 +712,58 @@ void rsx_debugger::GetBuffers()
 	}
 
 	// Draw Texture
-/*	if(!render->textures[m_cur_texture].enabled())
-		return;
+	//if (!render->textures[m_cur_texture].enabled())
+	//	return;
 
-	u32 offset = render->textures[m_cur_texture].offset();
+	//u32 offset = render->textures[m_cur_texture].offset();
 
-	if(!offset)
-		return;
+	//if(!offset)
+	//	return;
 
-	u8 location = render->textures[m_cur_texture].location();
+	//u8 location = render->textures[m_cur_texture].location();
 
-	if(location > 1)
-		return;
+	//if(location > 1)
+	//	return;
 
-	u32 TexBuffer_addr = rsx::get_address(offset, location, HERE);
+	//u32 TexBuffer_addr = rsx::get_address(offset, location);
 
-	if(!vm::check_addr(TexBuffer_addr))
-		return;
+	//if(!vm::check_addr(TexBuffer_addr))
+	//	return;
 
-	unsigned char* TexBuffer = vm::get_super_ptr<u8>(TexBuffer_addr);
+	//unsigned char* TexBuffer = vm::get_super_ptr<u8>(TexBuffer_addr);
 
-	u32 width  = render->textures[m_cur_texture].width();
-	u32 height = render->textures[m_cur_texture].height();
-	unsigned char* buffer = (unsigned char*)malloc(width * height * 3);
-	std::memcpy(buffer, vm::base(TexBuffer_addr), width * height * 3);
+	//const u32 width  = render->textures[m_cur_texture].width();
+	//const u32 height = render->textures[m_cur_texture].height();
+	//unsigned char* buffer = (unsigned char*)malloc(width * height * 3);
+	//std::memcpy(buffer, vm::base(TexBuffer_addr), width * height * 3);
 
-	m_buffer_tex->showImage(QImage(buffer, m_text_width, m_text_height, QImage::Format_RGB32));*/
+	//m_buffer_tex->showImage(QImage(buffer, m_text_width, m_text_height, QImage::Format_RGB32));
 }
-
-const char* rsx_debugger::ParseGCMEnum(u32 value, u32 type)
-{
-	switch(type)
-	{
-	case CELL_GCM_ENUM:
-	{
-		switch(value)
-		{
-		case 0x0200: return "Never";
-		case 0x0201: return "Less";
-		case 0x0202: return "Equal";
-		case 0x0203: return "Less or Equal";
-		case 0x0204: return "Greater";
-		case 0x0205: return "Not Equal";
-		case 0x0206: return "Greater or Equal";
-		case 0x0207: return "Always";
-
-		case 0x0:    return "Zero";
-		case 0x1:    return "One";
-		case 0x0300: return "SRC_COLOR";
-		case 0x0301: return "1 - SRC_COLOR";
-		case 0x0302: return "SRC_ALPHA";
-		case 0x0303: return "1 - SRC_ALPHA";
-		case 0x0304: return "DST_ALPHA";
-		case 0x0305: return "1 - DST_ALPHA";
-		case 0x0306: return "DST_COLOR";
-		case 0x0307: return "1 - DST_COLOR";
-		case 0x0308: return "SRC_ALPHA_SATURATE";
-		case 0x8001: return "CONSTANT_COLOR";
-		case 0x8002: return "1 - CONSTANT_COLOR";
-		case 0x8003: return "CONSTANT_ALPHA";
-		case 0x8004: return "1 - CONSTANT_ALPHA";
-
-		case 0x8006: return "Add";
-		case 0x8007: return "Min";
-		case 0x8008: return "Max";
-		case 0x800A: return "Substract";
-		case 0x800B: return "Reverse Substract";
-		case 0xF005: return "Reverse Substract Signed";
-		case 0xF006: return "Add Signed";
-		case 0xF007: return "Reverse Add Signed";
-
-		default: return "Wrong Value!";
-		}
-	}
-	case CELL_GCM_PRIMITIVE_ENUM:
-	{
-		switch(value)
-		{
-		case 1:  return "POINTS";
-		case 2:  return "LINES";
-		case 3:  return "LINE_LOOP";
-		case 4:  return "LINE_STRIP";
-		case 5:  return "TRIANGLES";
-		case 6:  return "TRIANGLE_STRIP";
-		case 7:  return "TRIANGLE_FAN";
-		case 8:  return "QUADS";
-		case 9:  return "QUAD_STRIP";
-		case 10: return "POLYGON";
-
-		default: return "Wrong Value!";
-		}
-	}
-	default: return "Unknown!";
-	}
-}
-
-#define case_16(a, m) \
-	case a + m: \
-	case a + m * 2: \
-	case a + m * 3: \
-	case a + m * 4: \
-	case a + m * 5: \
-	case a + m * 6: \
-	case a + m * 7: \
-	case a + m * 8: \
-	case a + m * 9: \
-	case a + m * 10: \
-	case a + m * 11: \
-	case a + m * 12: \
-	case a + m * 13: \
-	case a + m * 14: \
-	case a + m * 15: \
-	index = (cmd - a) / m; \
-	[[fallthrough]]; \
-	case a \
 
 QString rsx_debugger::DisAsmCommand(u32 cmd, u32 count, u32 ioAddr)
 {
 	std::string disasm;
 
-#define DISASM(string, ...) { if(disasm.empty()) disasm = fmt::format((string), ##__VA_ARGS__); else disasm += (' ' + fmt::format((string), ##__VA_ARGS__)); }
+#define DISASM(string, ...) { disasm.empty() ? fmt::append(disasm, ("" string), ##__VA_ARGS__) : fmt::append(disasm, (" " string), ##__VA_ARGS__); }
 
 	if (cmd & RSX_METHOD_NON_METHOD_CMD_MASK)
 	{
-		if((cmd & RSX_METHOD_OLD_JUMP_CMD_MASK) == RSX_METHOD_OLD_JUMP_CMD)
+		if ((cmd & RSX_METHOD_OLD_JUMP_CMD_MASK) == RSX_METHOD_OLD_JUMP_CMD)
 		{
 			u32 jumpAddr = cmd & RSX_METHOD_OLD_JUMP_OFFSET_MASK;
 			DISASM("JUMP to 0x%07x", jumpAddr);
 		}
-		else if((cmd & RSX_METHOD_NEW_JUMP_CMD_MASK) == RSX_METHOD_NEW_JUMP_CMD)
+		else if ((cmd & RSX_METHOD_NEW_JUMP_CMD_MASK) == RSX_METHOD_NEW_JUMP_CMD)
 		{
 			u32 jumpAddr = cmd & RSX_METHOD_NEW_JUMP_OFFSET_MASK;
 			DISASM("JUMP to 0x%07x", jumpAddr);
 		}
-		else if((cmd & RSX_METHOD_CALL_CMD_MASK) == RSX_METHOD_CALL_CMD)
+		else if ((cmd & RSX_METHOD_CALL_CMD_MASK) == RSX_METHOD_CALL_CMD)
 		{
 			u32 callAddr = cmd & RSX_METHOD_CALL_OFFSET_MASK;
 			DISASM("CALL to 0x%07x", callAddr);
 		}
-		else if((cmd & RSX_METHOD_RETURN_MASK) == RSX_METHOD_RETURN_CMD)
+		else if ((cmd & RSX_METHOD_RETURN_MASK) == RSX_METHOD_RETURN_CMD)
 		{
 			DISASM("RETURN");
 		}
@@ -849,48 +780,34 @@ QString rsx_debugger::DisAsmCommand(u32 cmd, u32 count, u32 ioAddr)
 	{
 		const auto args = vm::get_super_ptr<u32>(rsx::get_current_renderer()->iomap_table.get_addr(ioAddr + 4));
 
-		u32 index = 0;
+		[[maybe_unused]] u32 index = 0;
+
 		switch((cmd & 0x3ffff) >> 2)
 		{
 		case 0x3fead:
+		{
 			DISASM("Flip and change current buffer: %d", args[0]);
-		break;
-
-		case_16(NV4097_SET_TEXTURE_OFFSET, 0x20):
-			DISASM("Texture Offset[%d]: %07x", index, args[0]);
-			switch ((args[1] & 0x3) - 1)
-			{
-			case CELL_GCM_LOCATION_LOCAL: DISASM("(Local memory);");  break;
-			case CELL_GCM_LOCATION_MAIN:  DISASM("(Main memory);");   break;
-			default:                      DISASM("(Bad location!);"); break;
-			}
-			DISASM("    Cubemap:%s; Dimension:0x%x; Format:0x%x; Mipmap:0x%x",
-				(((args[1] >> 2) & 0x1) ? "True" : "False"),
-				((args[1] >> 4) & 0xf),
-				((args[1] >> 8) & 0xff),
-				((args[1] >> 16) & 0xffff));
-		break;
-
-		case NV4097_SET_DEPTH_BOUNDS_TEST_ENABLE:
-			DISASM("Depth bounds test: %s", args[0] ? "Enable" : "Disable");
-		break;
+			break;
+		}
 		default:
 		{
-			std::string str = rsx::get_pretty_printing_function((cmd & 0x3ffff) >> 2)(args[0]);
+			const u32 id = (cmd & 0x3ffff) >> 2;
+			std::string str = rsx::get_pretty_printing_function(id)(id, args[0]);
 			DISASM("%s", str.c_str());
+			break;
 		}
 		}
 
-		if((cmd & RSX_METHOD_NON_INCREMENT_CMD_MASK) == RSX_METHOD_NON_INCREMENT_CMD && count > 1)
+		if ((cmd & RSX_METHOD_NON_INCREMENT_CMD_MASK) == RSX_METHOD_NON_INCREMENT_CMD && count > 1)
 		{
 			DISASM("Non Increment cmd");
 		}
 
 		DISASM("(");
 
-		for(uint i=0; i<count; ++i)
+		for (uint i=0; i<count; ++i)
 		{
-			if(i != 0) disasm += ", ";
+			if (i != 0) disasm += ", ";
 			disasm += fmt::format("0x%x", args[i]);
 		}
 
@@ -911,8 +828,8 @@ void rsx_debugger::PerformJump(u32 address)
 	if (!vm::check_addr(address))
 		return;
 
-	u32 cmd = *vm::get_super_ptr<u32>(address);
-	u32 count = cmd & RSX_METHOD_NON_METHOD_CMD_MASK ? 0 : (cmd >> 18) & 0x7ff;
+	const u32 cmd = *vm::get_super_ptr<u32>(address);
+	const u32 count = cmd & RSX_METHOD_NON_METHOD_CMD_MASK ? 0 : (cmd >> 18) & 0x7ff;
 
 	if (count == 0)
 		return;

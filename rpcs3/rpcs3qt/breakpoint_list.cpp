@@ -1,4 +1,4 @@
-﻿#include "breakpoint_list.h"
+#include "breakpoint_list.h"
 #include "breakpoint_handler.h"
 
 #include "Emu/CPU/CPUDisAsm.h"
@@ -23,9 +23,9 @@ breakpoint_list::breakpoint_list(QWidget* parent, breakpoint_handler* handler) :
 /**
 * It's unfortunate I need a method like this to sync these.  Should ponder a cleaner way to do this.
 */
-void breakpoint_list::UpdateCPUData(std::weak_ptr<cpu_thread> cpu, std::shared_ptr<CPUDisAsm> disasm)
+void breakpoint_list::UpdateCPUData(cpu_thread* cpu, CPUDisAsm* disasm)
 {
-	this->cpu = cpu;
+	m_cpu = cpu;
 	m_disasm = disasm;
 }
 
@@ -62,11 +62,7 @@ void breakpoint_list::AddBreakpoint(u32 pc)
 {
 	m_breakpoint_handler->AddBreakpoint(pc);
 
-	const auto cpu = this->cpu.lock();
-	const auto cpu_offset = cpu->id_type() == 2 ? static_cast<spu_thread&>(*cpu).ls : vm::g_sudo_addr;
-	m_disasm->offset = cpu_offset;
-
-	m_disasm->disasm(m_disasm->dump_pc = pc);
+	m_disasm->disasm(pc);
 
 	QString breakpointItemText = qstr(m_disasm->last_opcode);
 
@@ -88,18 +84,19 @@ void breakpoint_list::AddBreakpoint(u32 pc)
 */
 void breakpoint_list::HandleBreakpointRequest(u32 loc)
 {
+	if (!m_cpu || m_cpu->id_type() != 1 || !vm::check_addr(loc, vm::page_allocated | vm::page_executable))
+	{
+		// TODO: SPU breakpoints
+		return;
+	}
+
 	if (m_breakpoint_handler->HasBreakpoint(loc))
 	{
 		RemoveBreakpoint(loc);
 	}
 	else
 	{
-		const auto cpu = this->cpu.lock();
-
-		if (cpu->id_type() == 1 && vm::check_addr(loc, vm::page_allocated | vm::page_executable))
-		{
-			AddBreakpoint(loc);
-		}
+		AddBreakpoint(loc);
 	}
 }
 

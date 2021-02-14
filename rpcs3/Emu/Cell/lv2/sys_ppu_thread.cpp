@@ -2,6 +2,7 @@
 #include "sys_ppu_thread.h"
 
 #include "Emu/IdManager.h"
+#include "Emu/perf_meter.hpp"
 
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/PPUThread.h"
@@ -11,6 +12,8 @@
 #include "sys_process.h"
 #include "sys_mmapper.h"
 #include "sys_memory.h"
+
+#include "util/asm.hpp"
 
 LOG_CHANNEL(sys_ppu_thread);
 
@@ -25,7 +28,15 @@ struct ppu_thread_cleaner
 		{
 			if (u32 id = old_id.exchange(new_id)) [[likely]]
 			{
-				if (!idm::remove<named_thread<ppu_thread>>(id)) [[unlikely]]
+				auto ppu = idm::get<named_thread<ppu_thread>>(id);
+
+				if (ppu)
+				{
+					// Join thread
+					(*ppu)();
+				}
+
+				if (!ppu || !idm::remove_verify<named_thread<ppu_thread>>(id, std::move(ppu))) [[unlikely]]
 				{
 					sys_ppu_thread.fatal("Failed to remove detached thread 0x%x", id);
 				}
@@ -33,6 +44,21 @@ struct ppu_thread_cleaner
 		}
 	}
 };
+
+bool ppu_thread_exit(ppu_thread& ppu)
+{
+	ppu.state += cpu_flag::exit + cpu_flag::wait;
+	
+	// Deallocate Stack Area
+	ensure(vm::dealloc(ppu.stack_addr, vm::stack) == ppu.stack_size);
+
+	if (const auto dct = g_fxo->get<lv2_memory_container>())
+	{
+		dct->used -= ppu.stack_size;
+	}
+
+	return false;
+}
 
 void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 {
@@ -42,8 +68,6 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 	if (ppu.state & cpu_flag::memory) vm::g_mutex.lock_unlock();
 
 	sys_ppu_thread.trace("_sys_ppu_thread_exit(errorcode=0x%llx)", errorcode);
-
-	ppu.state += cpu_flag::exit;
 
 	ppu_join_status old_status;
 	{
@@ -75,10 +99,15 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		ppu.state -= cpu_flag::suspend;
 	}
 
-	if (old_status == ppu_join_status::detached)
+	g_fxo->get<ppu_thread_cleaner>()->clean(old_status == ppu_join_status::detached ? ppu.id : 0);
+
+	while (ppu.joiner == ppu_join_status::zombie && !ppu.is_stopped())
 	{
-		g_fxo->get<ppu_thread_cleaner>()->clean(ppu.id);
+		// Wait for termination
+		thread_ctrl::wait_on(ppu.joiner, ppu_join_status::zombie);
 	}
+
+	ppu_thread_exit(ppu);
 }
 
 s32 sys_ppu_thread_yield(ppu_thread& ppu)
@@ -112,7 +141,7 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 			if (value == ppu_join_status::zombie)
 			{
 				value = ppu_join_status::exited;
-				return CELL_EBUSY;
+				return CELL_EAGAIN;
 			}
 
 			if (value == ppu_join_status::exited)
@@ -133,6 +162,10 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 		{
 			lv2_obj::sleep(ppu);
 		}
+		else if (result == CELL_EAGAIN)
+		{
+			thread.joiner.notify_one();
+		}
 
 		return result;
 	});
@@ -142,7 +175,7 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 		return CELL_ESRCH;
 	}
 
-	if (thread.ret && thread.ret != CELL_EBUSY)
+	if (thread.ret && thread.ret != CELL_EAGAIN)
 	{
 		return thread.ret;
 	}
@@ -152,14 +185,14 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 
 	if (ppu.test_stopped())
 	{
-		return 0;
+		return {};
 	}
 
 	// Get the exit status from the register
 	const u64 vret = thread->gpr[3];
 
 	// Cleanup
-	verify(HERE), idm::remove_verify<named_thread<ppu_thread>>(thread_id, std::move(thread.ptr));
+	ensure(idm::remove_verify<named_thread<ppu_thread>>(thread_id, std::move(thread.ptr)));
 
 	if (!vptr)
 	{
@@ -181,7 +214,7 @@ error_code sys_ppu_thread_detach(ppu_thread& ppu, u32 thread_id)
 
 	const auto thread = idm::check<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread) -> CellError
 	{
-		return thread.joiner.atomic_op([](ppu_join_status& value) -> CellError
+		CellError result = thread.joiner.atomic_op([](ppu_join_status& value) -> CellError
 		{
 			if (value == ppu_join_status::zombie)
 			{
@@ -207,6 +240,13 @@ error_code sys_ppu_thread_detach(ppu_thread& ppu, u32 thread_id)
 			value = ppu_join_status::detached;
 			return {};
 		});
+
+		if (result == CELL_EAGAIN)
+		{
+			thread.joiner.notify_one();
+		}
+
+		return result;
 	});
 
 	if (!thread)
@@ -221,7 +261,8 @@ error_code sys_ppu_thread_detach(ppu_thread& ppu, u32 thread_id)
 
 	if (thread.ret == CELL_EAGAIN)
 	{
-		verify(HERE), idm::remove<named_thread<ppu_thread>>(thread_id);
+		g_fxo->get<ppu_thread_cleaner>()->clean(thread_id);
+		g_fxo->get<ppu_thread_cleaner>()->clean(0);
 	}
 
 	return CELL_OK;
@@ -388,7 +429,7 @@ error_code _sys_ppu_thread_create(ppu_thread& ppu, vm::ptr<u64> thread_id, vm::p
 	g_fxo->get<ppu_thread_cleaner>()->clean(0);
 
 	// Compute actual stack size and allocate
-	const u32 stack_size = ::align<u32>(std::max<u32>(_stacksz, 4096), 4096);
+	const u32 stack_size = utils::align<u32>(std::max<u32>(_stacksz, 4096), 4096);
 
 	const auto dct = g_fxo->get<lv2_memory_container>();
 
@@ -492,7 +533,8 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 	}
 	else
 	{
-		thread_ctrl::notify(*thread);
+		thread->cmd_notify++;
+		thread->cmd_notify.notify_one();
 
 		// Dirty hack for sound: confirm the creation of _mxr000 event queue
 		if (*thread->ppu_tname.load() == "_cellsurMixerMain"sv)
@@ -507,7 +549,7 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 			{
 				if (ppu.is_stopped())
 				{
-					return 0;
+					return {};
 				}
 
 				thread_ctrl::wait_for(50000);

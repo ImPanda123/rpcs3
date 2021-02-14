@@ -26,7 +26,7 @@ namespace vm
 {
 	static u8* memory_reserve_4GiB(void* _addr, u64 size = 0x100000000)
 	{
-		for (u64 addr = reinterpret_cast<u64>(_addr) + 0x100000000;; addr += 0x100000000)
+		for (u64 addr = reinterpret_cast<u64>(_addr) + 0x100000000; addr < 0x8000'0000'0000; addr += 0x100000000)
 		{
 			if (auto ptr = utils::memory_reserve(size, reinterpret_cast<void*>(addr)))
 			{
@@ -34,21 +34,23 @@ namespace vm
 			}
 		}
 
-		// TODO: a condition to break loop
-		return static_cast<u8*>(utils::memory_reserve(size));
+		fmt::throw_exception("Failed to reserve vm memory");
 	}
 
 	// Emulated virtual memory
-	u8* const g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000));
+	u8* const g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x2'0000'0000);
 
 	// Unprotected virtual memory mirror
-	u8* const g_sudo_addr = memory_reserve_4GiB(g_base_addr);
+	u8* const g_sudo_addr = g_base_addr + 0x1'0000'0000;
 
 	// Auxiliary virtual memory for executable areas
 	u8* const g_exec_addr = memory_reserve_4GiB(g_sudo_addr, 0x200000000);
 
 	// Stats for debugging
 	u8* const g_stat_addr = memory_reserve_4GiB(g_exec_addr);
+
+	// For SPU
+	u8* const g_free_addr = g_stat_addr + 0x1'0000'0000;
 
 	// Reservation stats
 	alignas(4096) u8 g_reservations[65536 / 128 * 64]{0};
@@ -78,7 +80,7 @@ namespace vm
 	atomic_t<u64, 64> g_range_lock_set[64]{};
 
 	// Memory pages
-	std::array<memory_page, 0x100000000 / 4096> g_pages{};
+	std::array<memory_page, 0x100000000 / 4096> g_pages;
 
 	std::pair<bool, u64> try_reservation_update(u32 addr)
 	{
@@ -211,7 +213,7 @@ namespace vm
 
 			for (u32 i = begin / 4096, max = (begin + size - 1) / 4096; i <= max; i++)
 			{
-				if (!(g_pages[i].flags & (vm::page_readable)))
+				if (!(g_pages[i] & (vm::page_readable)))
 				{
 					test = i * 4096;
 					break;
@@ -242,7 +244,7 @@ namespace vm
 	{
 		if (range_lock < g_range_lock_set || range_lock >= std::end(g_range_lock_set))
 		{
-			fmt::throw_exception("Invalid range lock" HERE);
+			fmt::throw_exception("Invalid range lock");
 		}
 
 		range_lock->release(0);
@@ -284,7 +286,7 @@ namespace vm
 		// Shouldn't really happen
 		if (size == 0)
 		{
-			vm_log.warning("Tried to lock empty range (flags=0x%x, addr=0x%x)" HERE, flags >> 32, addr);
+			vm_log.warning("Tried to lock empty range (flags=0x%x, addr=0x%x)", flags >> 32, addr);
 			g_range_lock.release(0);
 			return;
 		}
@@ -292,7 +294,7 @@ namespace vm
 		// Limit to <512 MiB at once; make sure if it operates on big amount of data, it's page-aligned
 		if (size >= 512 * 1024 * 1024 || (size > 65536 && size % 4096))
 		{
-			fmt::throw_exception("Failed to lock range (flags=0x%x, addr=0x%x, size=0x%x)" HERE, flags >> 32, addr, size);
+			fmt::throw_exception("Failed to lock range (flags=0x%x, addr=0x%x, size=0x%x)", flags >> 32, addr, size);
 		}
 
 		// Block or signal new range locks
@@ -310,8 +312,6 @@ namespace vm
 		{
 			to_clear = for_all_range_locks(to_clear, [&](u32 addr2, u32 size2)
 			{
-				ASSUME(size2);
-
 				if (range.overlaps(utils::address_range::start_length(addr2, size2))) [[unlikely]]
 				{
 					return 1;
@@ -325,7 +325,7 @@ namespace vm
 				break;
 			}
 
-			_mm_pause();
+			utils::pause();
 		}
 	}
 
@@ -527,7 +527,7 @@ namespace vm
 					break;
 				}
 
-				_mm_pause();
+				utils::pause();
 			}
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
@@ -535,7 +535,9 @@ namespace vm
 				if (auto ptr = +*lock)
 				{
 					while (!(ptr->state & cpu_flag::wait))
-						_mm_pause();
+					{
+						utils::pause();
+					}
 				}
 			}
 		}
@@ -572,7 +574,7 @@ namespace vm
 			else
 			{
 				// TODO: Accurate locking in this case
-				if (!(g_pages[addr / 4096].flags & page_writable))
+				if (!(g_pages[addr / 4096] & page_writable))
 				{
 					return -1;
 				}
@@ -660,14 +662,14 @@ namespace vm
 
 		if (!size || (size | addr) % 4096 || flags & page_allocated)
 		{
-			fmt::throw_exception("Invalid arguments (addr=0x%x, size=0x%x)" HERE, addr, size);
+			fmt::throw_exception("Invalid arguments (addr=0x%x, size=0x%x)", addr, size);
 		}
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i].flags)
+			if (g_pages[i])
 			{
-				fmt::throw_exception("Memory already mapped (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)" HERE, addr, size, flags, i * 4096);
+				fmt::throw_exception("Memory already mapped (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
 		}
 
@@ -686,7 +688,7 @@ namespace vm
 				// 1. To simplify range_lock logic
 				// 2. To make sure it never overlaps with 32-bit addresses
 				// Also check that it's aligned (lowest 16 bits)
-				verify(HERE), (shm_self & 0xffff'8000'0000'ffff) == range_locked;
+				ensure((shm_self & 0xffff'8000'0000'ffff) == range_locked);
 
 				// Find another mirror and map it as shareable too
 				for (auto& ploc : g_locations)
@@ -716,7 +718,7 @@ namespace vm
 			u64 shm_self = reinterpret_cast<u64>(shm->get()) ^ range_locked;
 
 			// Check (see above)
-			verify(HERE), (shm_self & 0xffff'8000'0000'ffff) == range_locked;
+			ensure((shm_self & 0xffff'8000'0000'ffff) == range_locked);
 
 			// Map range as shareable
 			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
@@ -761,9 +763,9 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i].flags.exchange(flags | page_allocated))
+			if (g_pages[i].exchange(flags | page_allocated))
 			{
-				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)" HERE, addr, size, flags, i * 4096);
+				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
 		}
 
@@ -779,7 +781,7 @@ namespace vm
 
 		if (!size || (size | addr) % 4096)
 		{
-			fmt::throw_exception("Invalid arguments (addr=0x%x, size=0x%x)" HERE, addr, size);
+			fmt::throw_exception("Invalid arguments (addr=0x%x, size=0x%x)", addr, size);
 		}
 
 		const u8 flags_both = flags_set & flags_clear;
@@ -790,7 +792,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if ((g_pages[i].flags & flags_test) != (flags_test | page_allocated))
+			if ((g_pages[i] & flags_test) != (flags_test | page_allocated))
 			{
 				return false;
 			}
@@ -810,14 +812,14 @@ namespace vm
 
 			if (i < end)
 			{
-				new_val = g_pages[i].flags;
+				new_val = g_pages[i];
 				new_val |= flags_set;
 				new_val &= ~flags_clear;
 			}
 
 			if (new_val != start_value)
 			{
-				const u8 old_val = g_pages[start].flags;
+				const u8 old_val = g_pages[start];
 
 				if (u32 page_size = (i - start) * 4096; page_size && old_val != start_value)
 				{
@@ -833,7 +835,7 @@ namespace vm
 
 					for (u32 j = start; j < i; j++)
 					{
-						g_pages[j].flags.release(start_value);
+						g_pages[j].release(start_value);
 					}
 
 					if ((old_val ^ start_value) & (page_readable | page_writable))
@@ -863,7 +865,7 @@ namespace vm
 
 		if (!max_size || (max_size | addr) % 4096)
 		{
-			fmt::throw_exception("Invalid arguments (addr=0x%x, max_size=0x%x)" HERE, addr, max_size);
+			fmt::throw_exception("Invalid arguments (addr=0x%x, max_size=0x%x)", addr, max_size);
 		}
 
 		// Determine deallocation size
@@ -872,19 +874,19 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + max_size / 4096; i++)
 		{
-			if ((g_pages[i].flags & page_allocated) == 0)
+			if ((g_pages[i] & page_allocated) == 0)
 			{
 				break;
 			}
 
 			if (size == 0)
 			{
-				is_exec = !!(g_pages[i].flags & page_executable);
+				is_exec = !!(g_pages[i] & page_executable);
 			}
 			else
 			{
 				// Must be consistent
-				verify(HERE), is_exec == !!(g_pages[i].flags & page_executable);
+				ensure(is_exec == !!(g_pages[i] & page_executable));
 			}
 
 			size += 4096;
@@ -905,12 +907,12 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (!(g_pages[i].flags & page_allocated))
+			if (!(g_pages[i] & page_allocated))
 			{
-				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, current_addr=0x%x)" HERE, addr, size, i * 4096);
+				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, current_addr=0x%x)", addr, size, i * 4096);
 			}
 
-			g_pages[i].flags.release(0);
+			g_pages[i].release(0);
 		}
 
 		// Notify rsx to invalidate range
@@ -967,7 +969,7 @@ namespace vm
 
 		for (u32 i = addr / 4096, max = (addr + size - 1) / 4096; i <= max;)
 		{
-			auto state = +g_pages[i].flags;
+			auto state = +g_pages[i];
 
 			if (~state & flags) [[unlikely]]
 			{
@@ -976,13 +978,13 @@ namespace vm
 
 			if (state & page_1m_size)
 			{
-				i = ::align(i + 1, 0x100000 / 4096);
+				i = utils::align(i + 1, 0x100000 / 4096);
 				continue;
 			}
 
 			if (state & page_64k_size)
 			{
-				i = ::align(i + 1, 0x10000 / 4096);
+				i = utils::align(i + 1, 0x10000 / 4096);
 				continue;
 			}
 
@@ -998,59 +1000,48 @@ namespace vm
 
 		if (!block)
 		{
-			fmt::throw_exception("Invalid memory location (%u)" HERE, +location);
+			vm_log.error("vm::alloc(): Invalid memory location (%u)", +location);
+			ensure(location < memory_location_max); // The only allowed locations to fail
+			return 0;
 		}
 
 		return block->alloc(size, nullptr, align);
 	}
 
-	u32 falloc(u32 addr, u32 size, memory_location_t location)
+	u32 falloc(u32 addr, u32 size, memory_location_t location, const std::shared_ptr<utils::shm>* src)
 	{
 		const auto block = get(location, addr);
 
 		if (!block)
 		{
-			fmt::throw_exception("Invalid memory location (%u, addr=0x%x)" HERE, +location, addr);
+			vm_log.error("vm::falloc(): Invalid memory location (%u, addr=0x%x)", +location, addr);
+			ensure(location == any || location < memory_location_max); // The only allowed locations to fail
+			return 0;
 		}
 
-		return block->falloc(addr, size);
+		return block->falloc(addr, size, src);
 	}
 
-	u32 dealloc(u32 addr, memory_location_t location)
+	u32 dealloc(u32 addr, memory_location_t location, const std::shared_ptr<utils::shm>* src)
 	{
 		const auto block = get(location, addr);
 
 		if (!block)
 		{
-			fmt::throw_exception("Invalid memory location (%u, addr=0x%x)" HERE, +location, addr);
+			vm_log.error("vm::dealloc(): Invalid memory location (%u, addr=0x%x)", +location, addr);
+			ensure(location == any || location < memory_location_max); // The only allowed locations to fail
+			return 0;
 		}
 
-		return block->dealloc(addr);
-	}
-
-	void dealloc_verbose_nothrow(u32 addr, memory_location_t location) noexcept
-	{
-		const auto block = get(location, addr);
-
-		if (!block)
-		{
-			vm_log.error("vm::dealloc(): invalid memory location (%u, addr=0x%x)\n", +location, addr);
-			return;
-		}
-
-		if (!block->dealloc(addr))
-		{
-			vm_log.error("vm::dealloc(): deallocation failed (addr=0x%x)\n", addr);
-			return;
-		}
+		return block->dealloc(addr, src);
 	}
 
 	void lock_sudo(u32 addr, u32 size)
 	{
 		perf_meter<"PAGE_LCK"_u64> perf;
 
-		verify("lock_sudo" HERE), addr % 4096 == 0;
-		verify("lock_sudo" HERE), size % 4096 == 0;
+		ensure(addr % 4096 == 0);
+		ensure(size % 4096 == 0);
 
 		if (!utils::memory_lock(g_sudo_addr + addr, size))
 		{
@@ -1058,12 +1049,15 @@ namespace vm
 		}
 	}
 
+	// Mapped regions: addr -> shm handle
+	constexpr auto block_map = &auto_typemap<block_t>::get<std::map<u32, std::pair<u32, std::shared_ptr<utils::shm>>>>;
+
 	bool block_t::try_alloc(u32 addr, u8 flags, u32 size, std::shared_ptr<utils::shm>&& shm)
 	{
 		// Check if memory area is already mapped
 		for (u32 i = addr / 4096; i <= (addr + size - 1) / 4096; i++)
 		{
-			if (g_pages[i].flags)
+			if (g_pages[i])
 			{
 				return false;
 			}
@@ -1075,14 +1069,16 @@ namespace vm
 		if (this->flags & 0x10)
 		{
 			// Mark overflow/underflow guard pages as allocated
-			verify(HERE), !g_pages[addr / 4096].flags.exchange(page_allocated);
-			verify(HERE), !g_pages[addr / 4096 + size / 4096 - 1].flags.exchange(page_allocated);
+			ensure(!g_pages[addr / 4096].exchange(page_allocated));
+			ensure(!g_pages[addr / 4096 + size / 4096 - 1].exchange(page_allocated));
 		}
 
 		// Map "real" memory pages; provide a function to search for mirrors with private member access
 		_page_map(page_addr, flags, page_size, shm.get(), [](vm::block_t* _this, utils::shm* shm)
 		{
-			decltype(m_map)::value_type* result = nullptr;
+			auto& map = (_this->m.*block_map)();
+
+			std::remove_reference_t<decltype(map)>::value_type* result = nullptr;
 
 			// Check eligibility
 			if (!_this || !(SYS_MEMORY_PAGE_SIZE_MASK & _this->flags) || _this->addr < 0x20000000 || _this->addr >= 0xC0000000)
@@ -1090,7 +1086,7 @@ namespace vm
 				return result;
 			}
 
-			for (auto& pp : _this->m_map)
+			for (auto& pp : map)
 			{
 				if (pp.second.second.get() == shm)
 				{
@@ -1105,12 +1101,10 @@ namespace vm
 		// Fill stack guards with STACKGRD
 		if (this->flags & 0x10)
 		{
-			auto fill64 = [](u8* ptr, u64 data, std::size_t count)
+			auto fill64 = [](u8* ptr, u64 data, usz count)
 			{
-				u64* target = reinterpret_cast<u64*>(ptr);
-
 #ifdef _MSC_VER
-				__stosq(target, data, count);
+				__stosq(reinterpret_cast<u64*>(ptr), data, count);
 #else
 				__asm__ ("mov %0, %%rdi; mov %1, %%rax; mov %2, %%rcx; rep stosq;"
 					:
@@ -1125,7 +1119,7 @@ namespace vm
 		}
 
 		// Add entry
-		m_map[addr] = std::make_pair(size, std::move(shm));
+		(m.*block_map)()[addr] = std::make_pair(size, std::move(shm));
 
 		return true;
 	}
@@ -1147,6 +1141,7 @@ namespace vm
 
 	block_t::~block_t()
 	{
+		auto& m_map = (m.*block_map)();
 		{
 			vm::writer_lock lock(0);
 
@@ -1179,12 +1174,12 @@ namespace vm
 		const u32 min_page_size = flags & 0x100 ? 0x1000 : 0x10000;
 
 		// Align to minimal page size
-		const u32 size = ::align(orig_size, min_page_size) + (flags & 0x10 ? 0x2000 : 0);
+		const u32 size = utils::align(orig_size, min_page_size) + (flags & 0x10 ? 0x2000 : 0);
 
 		// Check alignment (it's page allocation, so passing small values there is just silly)
 		if (align < min_page_size || align != (0x80000000u >> std::countl_zero(align)))
 		{
-			fmt::throw_exception("Invalid alignment (size=0x%x, align=0x%x)" HERE, size, align);
+			fmt::throw_exception("Invalid alignment (size=0x%x, align=0x%x)", size, align);
 		}
 
 		// Return if size is invalid
@@ -1208,7 +1203,7 @@ namespace vm
 		std::shared_ptr<utils::shm> shm;
 
 		if (m_common)
-			verify(HERE), !src;
+			ensure(!src);
 		else if (src)
 			shm = *src;
 		else
@@ -1219,7 +1214,7 @@ namespace vm
 		vm::writer_lock lock(0);
 
 		// Search for an appropriate place (unoptimized)
-		for (u32 addr = ::align(this->addr, align); u64{addr} + size <= u64{this->addr} + this->size; addr += align)
+		for (u32 addr = utils::align(this->addr, align); u64{addr} + size <= u64{this->addr} + this->size; addr += align)
 		{
 			if (try_alloc(addr, pflags, size, std::move(shm)))
 			{
@@ -1241,14 +1236,22 @@ namespace vm
 		// Determine minimal alignment
 		const u32 min_page_size = flags & 0x100 ? 0x1000 : 0x10000;
 
+		// Take address misalignment into account
+		const u32 size0 = orig_size + addr % min_page_size;
+
 		// Align to minimal page size
-		const u32 size = ::align(orig_size, min_page_size);
+		const u32 size = utils::align(size0, min_page_size);
 
 		// return if addr or size is invalid
-		if (!size || addr < this->addr || orig_size > size || addr + u64{size} > this->addr + u64{this->size} || flags & 0x10)
+		// If shared memory is provided, addr/size must be aligned
+		if (!size || addr < this->addr || orig_size > size0 || orig_size > size ||
+			(addr - addr % min_page_size) + u64{size} > this->addr + u64{this->size} || (src && (orig_size | addr) % min_page_size) || flags & 0x10)
 		{
 			return 0;
 		}
+
+		// Force aligned address
+		addr -= addr % min_page_size;
 
 		u8 pflags = flags & 0x1000 ? 0 : page_readable | page_writable;
 
@@ -1265,7 +1268,7 @@ namespace vm
 		std::shared_ptr<utils::shm> shm;
 
 		if (m_common)
-			verify(HERE), !src;
+			ensure(!src);
 		else if (src)
 			shm = *src;
 		else
@@ -1285,6 +1288,7 @@ namespace vm
 
 	u32 block_t::dealloc(u32 addr, const std::shared_ptr<utils::shm>* src)
 	{
+		auto& m_map = (m.*block_map)();
 		{
 			vm::writer_lock lock(0);
 
@@ -1306,12 +1310,12 @@ namespace vm
 			if (flags & 0x10)
 			{
 				// Clear guard pages
-				verify(HERE), g_pages[addr / 4096 - 1].flags.exchange(0) == page_allocated;
-				verify(HERE), g_pages[addr / 4096 + size / 4096].flags.exchange(0) == page_allocated;
+				ensure(g_pages[addr / 4096 - 1].exchange(0) == page_allocated);
+				ensure(g_pages[addr / 4096 + size / 4096].exchange(0) == page_allocated);
 			}
 
 			// Unmap "real" memory pages
-			verify(HERE), size == _page_unmap(addr, size, found->second.second.get());
+			ensure(size == _page_unmap(addr, size, found->second.second.get()));
 
 			// Clear stack guards
 			if (flags & 0x10)
@@ -1333,6 +1337,8 @@ namespace vm
 		{
 			return {addr, nullptr};
 		}
+
+		auto& m_map = (m.*block_map)();
 
 		vm::reader_lock lock;
 
@@ -1370,7 +1376,7 @@ namespace vm
 	{
 		u32 result = 0;
 
-		for (auto& entry : m_map)
+		for (auto& entry : (m.*block_map)())
 		{
 			result += entry.second.first - (flags & 0x10 ? 0x2000 : 0);
 		}
@@ -1412,7 +1418,7 @@ namespace vm
 
 	static std::shared_ptr<block_t> _find_map(u32 size, u32 align, u64 flags)
 	{
-		for (u32 addr = ::align<u32>(0x20000000, align); addr - 1 < 0xC0000000 - 1; addr += align)
+		for (u32 addr = utils::align<u32>(0x20000000, align); addr - 1 < 0xC0000000 - 1; addr += align)
 		{
 			if (_test_map(addr, size))
 			{
@@ -1427,7 +1433,7 @@ namespace vm
 	{
 		if (!size || (size | addr) % 4096)
 		{
-			fmt::throw_exception("Invalid arguments (addr=0x%x, size=0x%x)" HERE, addr, size);
+			fmt::throw_exception("Invalid arguments (addr=0x%x, size=0x%x)", addr, size);
 		}
 
 		if (!_test_map(addr, size))
@@ -1437,9 +1443,9 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i].flags)
+			if (g_pages[i])
 			{
-				fmt::throw_exception("Unexpected pages allocated (current_addr=0x%x)" HERE, i * 4096);
+				fmt::throw_exception("Unexpected pages allocated (current_addr=0x%x)", i * 4096);
 			}
 		}
 
@@ -1487,12 +1493,12 @@ namespace vm
 		vm::writer_lock lock(0);
 
 		// Align to minimal page size
-		const u32 size = ::align(orig_size, 0x10000);
+		const u32 size = utils::align(orig_size, 0x10000);
 
 		// Check alignment
 		if (align < 0x10000 || align != (0x80000000u >> std::countl_zero(align)))
 		{
-			fmt::throw_exception("Invalid alignment (size=0x%x, align=0x%x)" HERE, size, align);
+			fmt::throw_exception("Invalid alignment (size=0x%x, align=0x%x)", size, align);
 		}
 
 		// Return if size is invalid
@@ -1608,7 +1614,7 @@ namespace vm
 					case 2: atomic_storage<u16>::release(*static_cast<u16*>(dst), *static_cast<u16*>(src)); break;
 					case 4: atomic_storage<u32>::release(*static_cast<u32*>(dst), *static_cast<u32*>(src)); break;
 					case 8: atomic_storage<u64>::release(*static_cast<u64*>(dst), *static_cast<u64*>(src)); break;
-					case 16: _mm_store_si128(static_cast<__m128i*>(dst), _mm_loadu_si128(static_cast<__m128i*>(src))); break;
+					case 16: atomic_storage<u128>::release(*static_cast<u128*>(dst), *static_cast<u128*>(src)); break;
 					}
 
 					return true;
@@ -1638,6 +1644,8 @@ namespace vm
 			g_stat_addr, g_stat_addr + UINT32_MAX,
 			g_reservations, g_reservations + sizeof(g_reservations) - 1);
 
+			std::memset(&g_pages, 0, sizeof(g_pages));
+
 			g_locations =
 			{
 				std::make_shared<block_t>(0x00010000, 0x1FFF0000, 0x220), // main
@@ -1660,9 +1668,12 @@ namespace vm
 	{
 		g_locations.clear();
 
-		utils::memory_decommit(g_base_addr, 0x100000000);
-		utils::memory_decommit(g_exec_addr, 0x100000000);
+		utils::memory_decommit(g_base_addr, 0x200000000);
+		utils::memory_decommit(g_exec_addr, 0x200000000);
 		utils::memory_decommit(g_stat_addr, 0x100000000);
+
+		std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
+		g_range_lock_bits = 0;
 	}
 }
 

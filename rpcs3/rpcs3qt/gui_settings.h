@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "settings.h"
 #include "util/logs.hpp"
@@ -6,6 +6,7 @@
 #include <QVariant>
 #include <QSize>
 #include <QColor>
+#include <QMessageBox>
 
 namespace gui
 {
@@ -94,8 +95,8 @@ namespace gui
 	}
 
 	const QString Settings = "CurrentSettings";
-	const QString Default  = "default";
-	const QString None     = "none";
+	const QString DefaultStylesheet = "default";
+	const QString NoStylesheet = "none";
 
 	const QString main_window  = "main_window";
 	const QString game_list    = "GameList";
@@ -120,6 +121,7 @@ namespace gui
 	const gui_save ib_show_welcome = gui_save(main_window, "infoBoxEnabledWelcome",    true);
 	const gui_save ib_confirm_exit = gui_save(main_window, "confirmationBoxExitGame",  true);
 	const gui_save ib_confirm_boot = gui_save(main_window, "confirmationBoxBootGame",  true);
+	const gui_save ib_confirm_fw   = gui_save(main_window, "confirmationMissingFW",    true);
 
 	const gui_save fd_install_pkg  = gui_save(main_window, "lastExplorePathPKG",  "");
 	const gui_save fd_install_pup  = gui_save(main_window, "lastExplorePathPUP",  "");
@@ -127,6 +129,7 @@ namespace gui
 	const gui_save fd_boot_game    = gui_save(main_window, "lastExplorePathGAME", "");
 	const gui_save fd_decrypt_sprx = gui_save(main_window, "lastExplorePathSPRX", "");
 	const gui_save fd_cg_disasm    = gui_save(main_window, "lastExplorePathCGD",  "");
+	const gui_save fd_log_viewer   = gui_save(main_window, "lastExplorePathLOG",  "");
 
 	const gui_save mw_debugger         = gui_save(main_window, "debuggerVisible",  false);
 	const gui_save mw_logger           = gui_save(main_window, "loggerVisible",    true);
@@ -181,7 +184,7 @@ namespace gui
 	const gui_save rsx_states   = gui_save(rsx, "states",   QVariantMap());
 
 	const gui_save m_currentConfig     = gui_save(meta, "currentConfig",     Settings);
-	const gui_save m_currentStylesheet = gui_save(meta, "currentStylesheet", Default);
+	const gui_save m_currentStylesheet = gui_save(meta, "currentStylesheet", DefaultStylesheet);
 	const gui_save m_saveNotes         = gui_save(meta, "saveNotes",         QVariantMap()); // Deprecated
 	const gui_save m_showDebugTab      = gui_save(meta, "showDebugTab",      false);
 	const gui_save m_enableUIColors    = gui_save(meta, "enableUIColors",    false);
@@ -251,7 +254,6 @@ public:
 	bool GetGamelistColVisibility(int col);
 	QColor GetCustomColor(int col);
 	QStringList GetConfigEntries();
-	QString GetCurrentStylesheetPath();
 	QStringList GetStylesheetEntries();
 	QStringList GetGameListCategoryFilters();
 
@@ -273,7 +275,7 @@ public Q_SLOTS:
 private:
 	void SaveConfigNameToDefault(const QString& config_name);
 	void BackupSettingsToTarget(const QString& config_name);
-	void ShowBox(bool confirm, const QString& title, const QString& text, const gui_save& entry, int* result, QWidget* parent, bool always_on_top);
+	void ShowBox(QMessageBox::Icon icon, const QString& title, const QString& text, const gui_save& entry, int* result, QWidget* parent, bool always_on_top);
 
 	QString m_current_name;
 };
