@@ -648,6 +648,7 @@ namespace rsx
 		u32 dma_address{0};
 		rsx_iomap_table iomap_table;
 		u32 restore_point = 0;
+		u32 dbg_step_pc = 0;
 		atomic_t<u32> external_interrupt_lock{ 0 };
 		atomic_t<bool> external_interrupt_ack{ false };
 		bool is_fifo_idle() const;
@@ -655,7 +656,7 @@ namespace rsx
 		void recover_fifo();
 		static void fifo_wake_delay(u64 div = 1);
 		u32 get_fifo_cmd() const;
-	
+
 		std::string dump_regs() const override;
 		void cpu_wait(bs_t<cpu_flag> old) override;
 
@@ -973,7 +974,7 @@ namespace rsx
 
 	inline thread* get_current_renderer()
 	{
-		return g_fxo->get<rsx::thread>();
+		return g_fxo->try_get<rsx::thread>();
 	}
 
 	template<bool IsFullLock = false>

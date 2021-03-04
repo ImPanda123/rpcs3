@@ -379,18 +379,6 @@ namespace vm
 		}
 	}
 
-	void cleanup_unlock(cpu_thread& cpu) noexcept
-	{
-		for (u32 i = 0, max = g_cfg.core.ppu_threads; i < max; i++)
-		{
-			if (g_locks[i] == &cpu)
-			{
-				g_locks[i].compare_and_swap_test(&cpu, nullptr);
-				return;
-			}
-		}
-	}
-
 	void temporary_unlock(cpu_thread& cpu) noexcept
 	{
 		if (!(cpu.state & cpu_flag::wait)) cpu.state += cpu_flag::wait;
@@ -730,7 +718,7 @@ namespace vm
 		// Notify rsx that range has become valid
 		// Note: This must be done *before* memory gets mapped while holding the vm lock, otherwise
 		//       the RSX might try to invalidate memory that got unmapped and remapped
-		if (const auto rsxthr = g_fxo->get<rsx::thread>())
+		if (const auto rsxthr = g_fxo->try_get<rsx::thread>())
 		{
 			rsxthr->on_notify_memory_mapped(addr, size);
 		}
@@ -752,13 +740,13 @@ namespace vm
 
 		if (flags & page_executable)
 		{
-			// TODO
+			// TODO (dead code)
 			utils::memory_commit(g_exec_addr + addr * 2, size * 2);
-		}
 
-		if (g_cfg.core.ppu_debug)
-		{
-			utils::memory_commit(g_stat_addr + addr, size);
+			if (g_cfg.core.ppu_debug)
+			{
+				utils::memory_commit(g_stat_addr + addr, size);
+			}
 		}
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
@@ -918,9 +906,9 @@ namespace vm
 		// Notify rsx to invalidate range
 		// Note: This must be done *before* memory gets unmapped while holding the vm lock, otherwise
 		//       the RSX might try to call VirtualProtect on memory that is already unmapped
-		if (const auto rsxthr = g_fxo->get<rsx::thread>())
+		if (auto& rsxthr = g_fxo->get<rsx::thread>(); g_fxo->is_init<rsx::thread>())
 		{
-			rsxthr->on_notify_memory_unmapped(addr, size);
+			rsxthr.on_notify_memory_unmapped(addr, size);
 		}
 
 		// Actually unmap memory
@@ -938,11 +926,11 @@ namespace vm
 		if (is_exec)
 		{
 			utils::memory_decommit(g_exec_addr + addr * 2, size * 2);
-		}
 
-		if (g_cfg.core.ppu_debug)
-		{
-			utils::memory_decommit(g_stat_addr + addr, size);
+			if (g_cfg.core.ppu_debug)
+			{
+				utils::memory_decommit(g_stat_addr + addr, size);
+			}
 		}
 
 		// Unlock

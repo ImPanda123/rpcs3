@@ -23,8 +23,10 @@ static u8* get_jit_memory()
 	static void* const s_memory2 = []() -> void*
 	{
 		void* ptr = utils::memory_reserve(0x80000000);
+#ifdef CAN_OVERCOMMIT
 		utils::memory_commit(ptr, 0x80000000);
 		utils::memory_protect(ptr, 0x40000000, utils::protection::wx);
+#endif
 		return ptr;
 	}();
 
@@ -563,7 +565,12 @@ public:
 		}
 		}
 
-		fs::file(name, fs::rewrite).write(zbuf.get(), zsz - zs.avail_out);
+		if (!fs::write_file(name, fs::rewrite, zbuf.get(), zsz - zs.avail_out))
+		{
+				jit_log.error("LLVM: Failed to create module file: %s (%s)", name, fs::g_tls_error);
+				return;
+		}
+
 		jit_log.notice("LLVM: Created module: %s", _module->getName().data());
 	}
 

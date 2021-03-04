@@ -440,13 +440,13 @@ namespace rsx
 				is_compiled = false;
 			}
 
-			virtual void set_text(const std::u32string& text)
+			void set_text(const std::u32string& text)
 			{
 				this->text = text;
 				is_compiled = false;
 			}
 
-			virtual void set_text(localized_string_id id)
+			void set_text(localized_string_id id)
 			{
 				set_text(get_localized_u32string(id));
 			}
@@ -1097,6 +1097,7 @@ namespace rsx
 			void set_color(color4f color);
 			void set_guide_interval(f32 guide_interval);
 			u16 get_height() const;
+			u32 get_datapoint_count() const;
 			void record_datapoint(f32 datapoint);
 			void update();
 			compiled_resource& get_compiled() override;

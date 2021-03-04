@@ -399,7 +399,7 @@ VKGSRender::VKGSRender() : GSRender()
 	}
 
 	//create command buffer...
-	m_command_buffer_pool.create((*m_device));
+	m_command_buffer_pool.create((*m_device), m_device->get_graphics_queue_family());
 
 	for (auto &cb : m_primary_cb_list)
 	{
@@ -410,7 +410,7 @@ VKGSRender::VKGSRender() : GSRender()
 	m_current_command_buffer = &m_primary_cb_list[0];
 
 	//Create secondary command_buffer for parallel operations
-	m_secondary_command_buffer_pool.create((*m_device));
+	m_secondary_command_buffer_pool.create((*m_device), m_device->get_graphics_queue_family());
 	m_secondary_command_buffer.create(m_secondary_command_buffer_pool, true);
 	m_secondary_command_buffer.access_hint = vk::command_buffer::access_type_hint::all;
 
@@ -518,7 +518,7 @@ VKGSRender::VKGSRender() : GSRender()
 
 	m_current_frame = &frame_context_storage[0];
 
-	m_texture_cache.initialize((*m_device), m_swapchain->get_graphics_queue(),
+	m_texture_cache.initialize((*m_device), m_device->get_graphics_queue(),
 			m_texture_upload_buffer_ring_info);
 
 	vk::get_overlay_pass<vk::ui_overlay_renderer>()->init(*m_current_command_buffer, m_texture_upload_buffer_ring_info);
@@ -657,7 +657,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 		std::lock_guard lock(m_secondary_cb_guard);
 
 		const rsx::invalidation_cause cause = is_writing ? rsx::invalidation_cause::deferred_write : rsx::invalidation_cause::deferred_read;
-		result = std::move(m_texture_cache.invalidate_address(m_secondary_command_buffer, address, cause));
+		result = m_texture_cache.invalidate_address(m_secondary_command_buffer, address, cause);
 	}
 
 	if (result.invalidate_samplers)
@@ -673,15 +673,15 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 
 	if (result.num_flushable > 0)
 	{
-		if (g_fxo->get<rsx::dma_manager>()->is_current_thread())
+		if (g_fxo->get<rsx::dma_manager>().is_current_thread())
 		{
 			// The offloader thread cannot handle flush requests
 			ensure(!(m_queue_status & flush_queue_state::deadlock));
 
-			m_offloader_fault_range = g_fxo->get<rsx::dma_manager>()->get_fault_range(is_writing);
+			m_offloader_fault_range = g_fxo->get<rsx::dma_manager>().get_fault_range(is_writing);
 			m_offloader_fault_cause = (is_writing) ? rsx::invalidation_cause::write : rsx::invalidation_cause::read;
 
-			g_fxo->get<rsx::dma_manager>()->set_mem_fault_flag();
+			g_fxo->get<rsx::dma_manager>().set_mem_fault_flag();
 			m_queue_status |= flush_queue_state::deadlock;
 
 			// Wait for deadlock to clear
@@ -690,7 +690,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 				utils::pause();
 			}
 
-			g_fxo->get<rsx::dma_manager>()->clear_mem_fault_flag();
+			g_fxo->get<rsx::dma_manager>().clear_mem_fault_flag();
 			return true;
 		}
 
@@ -738,7 +738,7 @@ void VKGSRender::on_invalidate_memory_range(const utils::address_range &range, r
 {
 	std::lock_guard lock(m_secondary_cb_guard);
 
-	auto data = std::move(m_texture_cache.invalidate_range(m_secondary_command_buffer, range, cause));
+	auto data = m_texture_cache.invalidate_range(m_secondary_command_buffer, range, cause);
 	AUDIT(data.empty());
 
 	if (cause == rsx::invalidation_cause::unmap)
@@ -820,7 +820,7 @@ void VKGSRender::check_heap_status(u32 flags)
 			m_index_buffer_ring_info.is_critical() ||
 			m_raster_env_ring_info.is_critical();
 	}
-	else if (flags)
+	else
 	{
 		heap_critical = false;
 		u32 test = 1u << std::countr_zero(flags);
@@ -1928,7 +1928,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 
 	// Workaround for deadlock occuring during RSX offloader fault
 	// TODO: Restructure command submission infrastructure to avoid this condition
-	const bool sync_success = g_fxo->get<rsx::dma_manager>()->sync();
+	const bool sync_success = g_fxo->get<rsx::dma_manager>().sync();
 	const VkBool32 force_flush = !sync_success;
 
 	if (vk::test_status_interrupt(vk::heap_dirty))
@@ -1960,7 +1960,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 
 			m_secondary_command_buffer.end();
 
-			m_secondary_command_buffer.submit(m_swapchain->get_graphics_queue(),
+			m_secondary_command_buffer.submit(m_device->get_graphics_queue(),
 				VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, force_flush);
 		}
 
@@ -1971,7 +1971,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 	if (m_current_command_buffer->flags & vk::command_buffer::cb_has_conditional_render)
 	{
 		ensure(m_render_pass_open);
-		m_device->cmdEndConditionalRenderingEXT(*m_current_command_buffer);
+		m_device->_vkCmdEndConditionalRenderingEXT(*m_current_command_buffer);
 	}
 #endif
 
@@ -1992,7 +1992,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 	m_current_command_buffer->end();
 	m_current_command_buffer->tag();
 
-	m_current_command_buffer->submit(m_swapchain->get_graphics_queue(),
+	m_current_command_buffer->submit(m_device->get_graphics_queue(),
 		wait_semaphore, signal_semaphore, pFence, pipeline_stage_flags, force_flush);
 
 	if (force_flush)

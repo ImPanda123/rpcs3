@@ -207,7 +207,7 @@ namespace rsx
 		void texture_read_semaphore_release(thread* rsx, u32 _reg, u32 arg)
 		{
 			// Pipeline barrier seems to be equivalent to a SHADER_READ stage barrier
-			g_fxo->get<rsx::dma_manager>()->sync();
+			g_fxo->get<rsx::dma_manager>().sync();
 			if (g_cfg.video.strict_rendering_mode)
 			{
 				rsx->sync();
@@ -230,7 +230,7 @@ namespace rsx
 		void back_end_write_semaphore_release(thread* rsx, u32 _reg, u32 arg)
 		{
 			// Full pipeline barrier
-			g_fxo->get<rsx::dma_manager>()->sync();
+			g_fxo->get<rsx::dma_manager>().sync();
 			rsx->sync();
 
 			const u32 offset = method_registers.semaphore_offset_4097();
@@ -1069,7 +1069,7 @@ namespace rsx
 			u32 dst_dma = 0;
 			rsx::blit_engine::transfer_destination_format dst_color_format;
 			u32 out_pitch = 0;
-			u32 out_alignment = 64;
+			[[maybe_unused]] u32 out_alignment = 64;
 			bool is_block_transfer = false;
 
 			switch (method_registers.blit_engine_context_surface())

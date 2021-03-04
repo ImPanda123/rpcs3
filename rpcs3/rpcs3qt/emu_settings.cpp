@@ -190,8 +190,9 @@ void emu_settings::SaveSettings()
 	}
 
 	// Save config atomically
-	fs::file(config_name + ".tmp", fs::rewrite).write(out.c_str(), out.size());
-	fs::rename(config_name + ".tmp", config_name, true);
+	fs::pending_file temp(config_name);
+	temp.file.write(out.c_str(), out.size());
+	temp.commit();
 
 	// Check if the running config/title is the same as the edited config/title.
 	if (config_name == g_cfg.name || m_title_id == Emu.GetTitleID())
@@ -852,6 +853,14 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		case move_handler::mouse: return tr("Mouse", "Move handler");
 		}
 		break;
+	case emu_settings_type::Buzz:
+		switch (static_cast<buzz_handler>(index))
+		{
+		case buzz_handler::null: return tr("Null (use real Buzzers)", "Buzz handler");
+		case buzz_handler::one_controller: return tr("1 controller (1-4 players)", "Buzz handler");
+		case buzz_handler::two_controllers: return tr("2 controllers (5-7 players)", "Buzz handler");
+		}
+		break;
 	case emu_settings_type::InternetStatus:
 		switch (static_cast<np_internet_status>(index))
 		{
@@ -878,6 +887,7 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 	case emu_settings_type::PerfOverlayDetailLevel:
 		switch (static_cast<detail_level>(index))
 		{
+		case detail_level::none: return tr("None", "Detail Level");
 		case detail_level::minimal: return tr("Minimal", "Detail Level");
 		case detail_level::low: return tr("Low", "Detail Level");
 		case detail_level::medium: return tr("Medium", "Detail Level");

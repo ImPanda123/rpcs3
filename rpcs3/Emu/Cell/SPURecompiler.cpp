@@ -4,7 +4,6 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/IdManager.h"
-#include "Emu/perf_meter.hpp"
 #include "Crypto/sha1.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/JIT.h"
@@ -547,7 +546,7 @@ void spu_cache::initialize()
 	// Initialize global cache instance
 	if (g_cfg.core.spu_cache)
 	{
-		*g_fxo->get<spu_cache>() = std::move(cache);
+		g_fxo->get<spu_cache>() = std::move(cache);
 	}
 }
 
@@ -4209,7 +4208,7 @@ public:
 		// Initialize if necessary
 		if (!m_spurt)
 		{
-			m_spurt = g_fxo->get<spu_runtime>();
+			m_spurt = &g_fxo->get<spu_runtime>();
 			cpu_translator::initialize(m_jit.get_context(), m_jit.get_engine());
 
 			const auto md_name = llvm::MDString::get(m_context, "branch_weights");
@@ -4253,9 +4252,9 @@ public:
 
 		std::string log;
 
-		if (auto cache = g_fxo->get<spu_cache>(); *cache && g_cfg.core.spu_cache && !add_loc->cached.exchange(1))
+		if (auto& cache = g_fxo->get<spu_cache>(); cache && g_cfg.core.spu_cache && !add_loc->cached.exchange(1))
 		{
-			cache->add(func);
+			cache.add(func);
 		}
 
 		{
@@ -4850,7 +4849,7 @@ public:
 			fs::file(m_spurt->get_cache_path() + "spu-ir.log", fs::write + fs::append).write(log);
 		}
 
-		if (*g_fxo->get<spu_cache>())
+		if (g_fxo->get<spu_cache>().operator bool())
 		{
 			spu_log.success("New block compiled successfully");
 		}
@@ -5949,7 +5948,9 @@ public:
 
 					const auto mmio = llvm::BasicBlock::Create(m_context, "", m_function);
 					const auto copy = llvm::BasicBlock::Create(m_context, "", m_function);
-					m_ir->CreateCondBr(m_ir->CreateICmpUGE(eal.value, m_ir->getInt32(0xe0000000)), mmio, copy, m_md_unlikely);
+
+					// Always use interpreter function for MFC debug option
+					m_ir->CreateCondBr(m_ir->CreateICmpUGE(eal.value, m_ir->getInt32(g_cfg.core.mfc_debug ? 0 : 0xe0000000)), mmio, copy, m_md_unlikely);
 					m_ir->SetInsertPoint(mmio);
 					m_ir->CreateStore(ci, spu_ptr<u8>(&spu_thread::ch_mfc_cmd, &spu_mfc_cmd::cmd));
 					call("spu_exec_mfc_cmd", &exec_mfc_cmd, m_thread);
@@ -8895,8 +8896,6 @@ struct spu_llvm_worker
 
 	void operator()()
 	{
-		perf_meter<"SPUW"_u32> perf0;
-
 		// SPU LLVM Recompiler instance
 		const auto compiler = spu_recompiler_base::make_llvm_recompiler();
 		compiler->init();
@@ -9031,7 +9030,7 @@ struct spu_llvm
 					{
 						const u64 name = atomic_storage<u64>::load(spu.block_hash);
 
-						if (!(spu.state.load() & (cpu_flag::wait + cpu_flag::stop + cpu_flag::dbg_global_pause)))
+						if (auto state = +spu.state; !::is_paused(state) && !::is_stopped(state) && !(state & cpu_flag::wait))
 						{
 							const auto found = std::as_const(samples).find(name);
 
@@ -9108,6 +9107,8 @@ struct spu_llvm
 			(workers.begin() + (worker_index++ % worker_count))->registered.push(reinterpret_cast<u64>(_old), &func);
 		}
 
+		static_cast<void>(prof_mutex.init_always([&]{ samples.clear(); }));
+
 		for (u32 i = 0; i < worker_count; i++)
 		{
 			(workers.begin() + i)->registered.push(0, nullptr);
@@ -9125,7 +9126,7 @@ struct spu_fast : public spu_recompiler_base
 	{
 		if (!m_spurt)
 		{
-			m_spurt = g_fxo->get<spu_runtime>();
+			m_spurt = &g_fxo->get<spu_runtime>();
 		}
 	}
 
@@ -9461,7 +9462,7 @@ struct spu_fast : public spu_recompiler_base
 		else if (added)
 		{
 			// Send work to LLVM compiler thread
-			g_fxo->get<spu_llvm_thread>()->registered.push(m_hash_start, add_loc);
+			g_fxo->get<spu_llvm_thread>().registered.push(m_hash_start, add_loc);
 		}
 
 		// Rebuild trampoline if necessary

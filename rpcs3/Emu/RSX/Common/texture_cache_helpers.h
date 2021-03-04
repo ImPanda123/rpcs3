@@ -166,7 +166,7 @@ namespace rsx
 			}
 		}
 
-		static blit_target_properties get_optimal_blit_target_properties(
+		static inline blit_target_properties get_optimal_blit_target_properties(
 			bool src_is_render_target,
 			address_range dst_range,
 			u32 dst_pitch,
@@ -187,7 +187,7 @@ namespace rsx
 						continue;
 					}
 
-					const u32 bpp = g_fxo->get<rsx::avconf>()->get_bpp();
+					const u32 bpp = g_fxo->get<rsx::avconf>().get_bpp();
 
 					const u32 pitch = buffer.pitch ? +buffer.pitch : bpp * buffer.width;
 					if (pitch != dst_pitch)
