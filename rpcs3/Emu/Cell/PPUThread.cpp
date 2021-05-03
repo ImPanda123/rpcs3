@@ -10,17 +10,19 @@
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/VFS.h"
+#include "Emu/system_progress.hpp"
+#include "Emu/system_utils.hpp"
 #include "PPUThread.h"
 #include "PPUInterpreter.h"
 #include "PPUAnalyser.h"
 #include "PPUModule.h"
 #include "PPUDisAsm.h"
 #include "SPURecompiler.h"
+#include "timers.hpp"
 #include "lv2/sys_sync.h"
 #include "lv2/sys_prx.h"
 #include "lv2/sys_overlay.h"
 #include "lv2/sys_process.h"
-#include "lv2/sys_memory.h"
 
 #ifdef LLVM_AVAILABLE
 #ifdef _MSC_VER
@@ -30,30 +32,20 @@
 #pragma GCC diagnostic ignored "-Wall"
 #pragma GCC diagnostic ignored "-Wextra"
 #pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
+#pragma GCC diagnostic ignored "-Weffc++"
+#pragma GCC diagnostic ignored "-Wmissing-noreturn"
 #endif
 #include "llvm/Support/FormattedStream.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/IR/LLVMContext.h"
-//#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
-//#include "llvm/IR/Module.h"
-//#include "llvm/IR/Function.h"
-//#include "llvm/Analysis/Passes.h"
-//#include "llvm/Analysis/BasicAliasAnalysis.h"
-//#include "llvm/Analysis/TargetTransformInfo.h"
-//#include "llvm/Analysis/MemoryDependenceAnalysis.h"
-//#include "llvm/Analysis/LoopInfo.h"
-//#include "llvm/Analysis/ScalarEvolution.h"
-#include "llvm/Analysis/Lint.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/IPO.h"
-#include "llvm/Transforms/Vectorize.h"
 #ifdef _MSC_VER
 #pragma warning(pop)
 #else
@@ -66,6 +58,7 @@
 #include <thread>
 #include <cfenv>
 #include <cctype>
+#include <optional>
 #include "util/asm.hpp"
 #include "util/vm.hpp"
 #include "util/v128.hpp"
@@ -74,15 +67,7 @@
 
 const bool s_use_ssse3 = utils::has_ssse3();
 
-extern u64 get_guest_system_time();
-
 extern atomic_t<u64> g_watchdog_hold_ctr;
-
-extern atomic_t<const char*> g_progr;
-extern atomic_t<u32> g_progr_ftotal;
-extern atomic_t<u32> g_progr_fdone;
-extern atomic_t<u32> g_progr_ptotal;
-extern atomic_t<u32> g_progr_pdone;
 
 // Should be of the same type
 using spu_rdata_t = decltype(ppu_thread::rdata);
@@ -352,7 +337,7 @@ void ppu_reservation_fallback(ppu_thread& ppu)
 
 static std::unordered_map<u32, u32>* s_ppu_toc;
 
-static bool ppu_check_toc(ppu_thread& ppu, ppu_opcode_t op)
+static bool ppu_check_toc(ppu_thread& ppu, ppu_opcode_t)
 {
 	// Compare TOC with expected value
 	const auto found = s_ppu_toc->find(ppu.cia);
@@ -456,11 +441,25 @@ extern void ppu_register_function_at(u32 addr, u32 size, ppu_function_t ptr)
 	}
 }
 
+atomic_t<bool> g_debugger_pause_all_threads_on_bp = true;
+
 // Breakpoint entry point
-static bool ppu_break(ppu_thread& ppu, ppu_opcode_t op)
+static bool ppu_break(ppu_thread& ppu, ppu_opcode_t)
 {
+	const bool pause_all = g_debugger_pause_all_threads_on_bp;
+
 	// Pause
-	ppu.state.atomic_op([](bs_t<cpu_flag>& state) { if (!(state & cpu_flag::dbg_step)) state += cpu_flag::dbg_pause; });
+	ppu.state.atomic_op([&](bs_t<cpu_flag>& state)
+	{
+		if (pause_all) state += cpu_flag::dbg_global_pause;
+		if (pause_all || !(state & cpu_flag::dbg_step)) state += cpu_flag::dbg_pause;
+	});
+
+	if (pause_all)
+	{
+		// Pause all other threads
+		Emu.CallAfter([]() { Emu.Pause(); });
+	}
 
 	if (ppu.check_state())
 	{
@@ -478,7 +477,7 @@ static bool ppu_break(ppu_thread& ppu, ppu_opcode_t op)
 }
 
 // Set or remove breakpoint
-extern void ppu_breakpoint(u32 addr, bool isAdding)
+extern void ppu_breakpoint(u32 addr, bool is_adding)
 {
 	if (g_cfg.core.ppu_decoder == ppu_decoder_type::llvm)
 	{
@@ -487,7 +486,7 @@ extern void ppu_breakpoint(u32 addr, bool isAdding)
 
 	const u64 _break = reinterpret_cast<uptr>(&ppu_break);
 
-	if (isAdding)
+	if (is_adding)
 	{
 		// Set breakpoint
 		ppu_ref(addr) = _break;
@@ -604,6 +603,9 @@ std::string ppu_thread::dump_regs() const
 	for (uint i = 0; i < 32; ++i)
 	{
 		auto reg = gpr[i];
+
+		// Fixup for syscall arguments
+		if (current_function && i >= 3 && i <= 10) reg = syscall_args[i - 3];
 
 		fmt::append(ret, "r%d%s: 0x%-8llx", i, i <= 9 ? " " : "", reg);
 
@@ -831,9 +833,9 @@ std::string ppu_thread::dump_misc() const
 		ret += _func;
 		ret += '\n';
 
-		for (u32 i = 3; i <= 6; i++)
-			if (gpr[i] != syscall_args[i - 3])
-				fmt::append(ret, " ** r%d: 0x%llx\n", i, syscall_args[i - 3]);
+		for (u32 i = 3; i <= 10; i++)
+			if (u64 v = gpr[i]; v != syscall_args[i - 3])
+				fmt::append(ret, " ** r%d: 0x%llx\n", i, v);
 	}
 	else if (is_paused())
 	{
@@ -939,7 +941,21 @@ void ppu_thread::cpu_task()
 		}
 		case ppu_cmd::initialize:
 		{
-			cmd_pop(), ppu_initialize(), spu_cache::initialize();
+			cmd_pop();
+
+			while (!g_fxo->get<rsx::thread>().is_inited && !is_stopped())
+			{
+				// Wait for RSX to be initialized
+				thread_ctrl::wait_on(g_fxo->get<rsx::thread>().is_inited, false);
+			}
+
+			ppu_initialize(), spu_cache::initialize();
+
+			// Wait until the progress dialog is closed.
+			// We don't want to open a cell dialog while a native progress dialog is still open.
+			g_progr_ptotal.wait<atomic_wait::op_ne>(0);
+			g_fxo->get<progress_dialog_workaround>().skip_the_progress_dialog = true;
+
 			break;
 		}
 		case ppu_cmd::sleep:
@@ -1117,6 +1133,18 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 	}
 }
 
+ppu_thread::thread_name_t::operator std::string() const
+{
+	std::string thread_name = fmt::format("PPU[0x%x]", _this->id);
+
+	if (const std::string name = *_this->ppu_tname.load(); !name.empty())
+	{
+		fmt::append(thread_name, " %s", name);
+	}
+
+	return thread_name;
+}
+
 void ppu_thread::cmd_push(cmd64 cmd)
 {
 	// Reserve queue space
@@ -1288,7 +1316,6 @@ void ppu_thread::stack_pop_verbose(u32 addr, u32 size) noexcept
 	ppu_log.error("Invalid thread");
 }
 
-extern u64 get_timebased_time();
 extern ppu_function_t ppu_get_syscall(u64 code);
 
 extern __m128 sse_exp2_ps(__m128 A);
@@ -1428,7 +1455,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 		ppu_log.trace(u8"LARX after fail: addr=0x%x, faddr=0x%x, time=%u c", addr, ppu.last_faddr, (perf0.get() - ppu.last_ftsc));
 	}
 
-	if ((addr & addr_mask) == (ppu.last_faddr & addr_mask) && (perf0.get() - ppu.last_ftsc) < 600 && (vm::reservation_acquire(addr, sizeof(T)) & -128) == ppu.last_ftime)
+	if ((addr & addr_mask) == (ppu.last_faddr & addr_mask) && (perf0.get() - ppu.last_ftsc) < 600 && (vm::reservation_acquire(addr) & -128) == ppu.last_ftime)
 	{
 		be_t<u64> rdata;
 		std::memcpy(&rdata, &ppu.rdata[addr & 0x78], 8);
@@ -1450,7 +1477,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 		ppu.last_faddr = 0;
 	}
 
-	ppu.rtime = vm::reservation_acquire(addr, sizeof(T)) & -128;
+	ppu.rtime = vm::reservation_acquire(addr) & -128;
 
 	be_t<u64> rdata;
 
@@ -1834,7 +1861,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 	}
 
 	auto& data = vm::_ref<atomic_be_t<u64>>(addr & -8);
-	auto& res = vm::reservation_acquire(addr, sizeof(T));
+	auto& res = vm::reservation_acquire(addr);
 	const u64 rtime = ppu.rtime;
 
 	be_t<u64> old_data = 0;
@@ -2143,7 +2170,7 @@ namespace
 			return m_file.stat();
 		}
 
-		bool trunc(u64 length) override
+		bool trunc(u64) override
 		{
 			return false;
 		}
@@ -2159,7 +2186,7 @@ namespace
 			return result;
 		}
 
-		u64 write(const void* buffer, u64 size) override
+		u64 write(const void*, u64) override
 		{
 			return 0;
 		}
@@ -2389,9 +2416,8 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 		}
 	}
 
-	g_progr = "Compiling PPU modules";
-
 	g_progr_ftotal += file_queue.size();
+	scoped_progress_dialog progr = "Compiling PPU modules...";
 
 	atomic_t<usz> fnext = 0;
 
@@ -2436,7 +2462,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 
 			if (!src)
 			{
-				ppu_log.error("Failed to decrypt '%s'", path);
+				ppu_log.notice("Failed to decrypt '%s'", path);
 				continue;
 			}
 
@@ -2500,7 +2526,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 				}
 			}
 
-			ppu_log.error("Failed to precompile '%s' (prx: %s, ovl: %s)", path, prx_err, ovl_err);
+			ppu_log.notice("Failed to precompile '%s' (prx: %s, ovl: %s)", path, prx_err, ovl_err);
 			continue;
 		}
 	});
@@ -2531,6 +2557,8 @@ extern void ppu_initialize()
 	{
 		return;
 	}
+
+	scoped_progress_dialog progr = "Scanning PPU modules...";
 
 	bool compile_main = false;
 
@@ -2565,7 +2593,7 @@ extern void ppu_initialize()
 	}
 
 	// Avoid compilation if main's cache exists or it is a standalone SELF with no PARAM.SFO
-	if (compile_main && !Emu.GetTitleID().empty())
+	if (compile_main && g_cfg.core.ppu_llvm_precompilation && !Emu.GetTitleID().empty())
 	{
 		// Try to add all related directories
 		const std::set<std::string> dirs = Emu.GetGameDirs();
@@ -2704,8 +2732,13 @@ bool ppu_initialize(const ppu_module& info, bool check_only)
 	}
 
 #ifdef LLVM_AVAILABLE
-	// Initialize progress dialog
-	g_progr = "Compiling PPU modules...";
+	std::optional<scoped_progress_dialog> progr;
+
+	if (!check_only)
+	{
+		// Initialize progress dialog
+		progr.emplace("Loading PPU modules...");
+	}
 
 	struct jit_core_allocator
 	{
@@ -2934,6 +2967,9 @@ bool ppu_initialize(const ppu_module& info, bool check_only)
 
 		if (!check_only)
 		{
+			// Update progress dialog
+			g_progr_ptotal++;
+
 			link_workload.emplace_back(obj_name, false);
 		}
 
@@ -2961,9 +2997,6 @@ bool ppu_initialize(const ppu_module& info, bool check_only)
 
 		// Fill workload list for compilation
 		workload.emplace_back(std::move(obj_name), std::move(part));
-
-		// Update progress dialog
-		g_progr_ptotal++;
 	}
 
 	if (check_only)
@@ -2971,9 +3004,14 @@ bool ppu_initialize(const ppu_module& info, bool check_only)
 		return false;
 	}
 
+	if (!workload.empty())
+	{
+		g_progr = "Compiling PPU modules...";
+	}
+
 	// Create worker threads for compilation (TODO: how many threads)
 	{
-		u32 thread_count = Emu.GetMaxThreads();
+		u32 thread_count = rpcs3::utils::get_max_threads();
 
 		if (workload.size() < thread_count)
 		{
@@ -3025,6 +3063,12 @@ bool ppu_initialize(const ppu_module& info, bool check_only)
 			return compiled_new;
 		}
 
+		if (workload.size() < link_workload.size())
+		{
+			// Only show this message if this task is relevant
+			g_progr = "Linking PPU modules...";
+		}
+
 		for (auto [obj_name, is_compiled] : link_workload)
 		{
 			if (Emu.IsStopped())
@@ -3037,6 +3081,7 @@ bool ppu_initialize(const ppu_module& info, bool check_only)
 			if (!is_compiled)
 			{
 				ppu_log.success("LLVM: Loaded module %s", obj_name);
+				g_progr_pdone++;
 			}
 		}
 	}

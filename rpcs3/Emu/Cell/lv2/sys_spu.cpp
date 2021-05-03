@@ -12,8 +12,8 @@
 
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/PPUThread.h"
-#include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/RawSPUThread.h"
+#include "Emu/Cell/timers.hpp"
 #include "sys_interrupt.h"
 #include "sys_process.h"
 #include "sys_memory.h"
@@ -24,8 +24,6 @@
 #include "util/asm.hpp"
 
 LOG_CHANNEL(sys_spu);
-
-extern u64 get_timebased_time();
 
 template <>
 void fmt_class_string<spu_group_status>::format(std::string& out, u64 arg)
@@ -102,7 +100,7 @@ void sys_spu_image::load(const fs::file& stream)
 	vm::page_protect(segs.addr(), utils::align(mem_size, 4096), 0, 0, vm::page_writable);
 }
 
-void sys_spu_image::free()
+void sys_spu_image::free() const
 {
 	if (type == SYS_SPU_IMAGE_TYPE_KERNEL)
 	{
@@ -111,7 +109,7 @@ void sys_spu_image::free()
 	}
 }
 
-void sys_spu_image::deploy(u8* loc, sys_spu_segment* segs, u32 nsegs)
+void sys_spu_image::deploy(u8* loc, std::span<const sys_spu_segment> segs)
 {
 	// Segment info dump
 	std::string dump;
@@ -121,20 +119,18 @@ void sys_spu_image::deploy(u8* loc, sys_spu_segment* segs, u32 nsegs)
 	sha1_starts(&sha);
 	u8 sha1_hash[20];
 
-	for (u32 i = 0; i < nsegs; i++)
+	for (const auto& seg : segs)
 	{
-		auto& seg = segs[i];
+		fmt::append(dump, "\n\t[%u] t=0x%x, ls=0x%x, size=0x%x, addr=0x%x", &seg - segs.data(), seg.type, seg.ls, seg.size, seg.addr);
 
-		fmt::append(dump, "\n\t[%d] t=0x%x, ls=0x%x, size=0x%x, addr=0x%x", i, seg.type, seg.ls, seg.size, seg.addr);
-
-		sha1_update(&sha, reinterpret_cast<uchar*>(&seg.type), sizeof(seg.type));
+		sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.type), sizeof(seg.type));
 
 		// Hash big-endian values
 		if (seg.type == SYS_SPU_SEGMENT_TYPE_COPY)
 		{
 			std::memcpy(loc + seg.ls, vm::base(seg.addr), seg.size);
-			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.size), sizeof(seg.size));
-			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.ls), sizeof(seg.ls));
+			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.size), sizeof(seg.size));
+			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.ls), sizeof(seg.ls));
 			sha1_update(&sha, vm::_ptr<uchar>(seg.addr), seg.size);
 		}
 		else if (seg.type == SYS_SPU_SEGMENT_TYPE_FILL)
@@ -145,9 +141,9 @@ void sys_spu_image::deploy(u8* loc, sys_spu_segment* segs, u32 nsegs)
 			}
 
 			std::fill_n(reinterpret_cast<be_t<u32>*>(loc + seg.ls), seg.size / 4, seg.addr);
-			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.size), sizeof(seg.size));
-			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.ls), sizeof(seg.ls));
-			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.addr), sizeof(seg.addr));
+			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.size), sizeof(seg.size));
+			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.ls), sizeof(seg.ls));
+			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.addr), sizeof(seg.addr));
 		}
 		else if (seg.type == SYS_SPU_SEGMENT_TYPE_INFO)
 		{
@@ -410,14 +406,7 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 
 	ensure(idm::import<named_thread<spu_thread>>([&]()
 	{
-		std::string full_name = fmt::format("SPU[0x%07x] ", tid);
-
-		if (!thread_name.empty())
-		{
-			fmt::append(full_name, "%s ", thread_name);
-		}
-
-		const auto spu = std::make_shared<named_thread<spu_thread>>(full_name, group.get(), spu_num, thread_name, tid, false, option);
+		const auto spu = std::make_shared<named_thread<spu_thread>>(group.get(), spu_num, thread_name, tid, false, option);
 		group->threads[inited] = spu;
 		group->threads_map[spu_num] = static_cast<s8>(inited);
 		return spu;
@@ -426,7 +415,7 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 	*thread = tid;
 
 	group->args[inited] = {arg->arg1, arg->arg2, arg->arg3, arg->arg4};
-	group->imgs[inited].first = image;
+	group->imgs[inited].first = image.entry_point;
 	group->imgs[inited].second.assign(image.segs.get_ptr(), image.segs.get_ptr() + image.nsegs);
 
 	if (++group->init == group->max_num)
@@ -734,7 +723,7 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 			auto& args = group->args[thread->lv2_id >> 24];
 			auto& img = group->imgs[thread->lv2_id >> 24];
 
-			sys_spu_image::deploy(thread->ls, img.second.data(), img.first.nsegs);
+			sys_spu_image::deploy(thread->ls, std::span(img.second.data(), img.second.size()));
 
 			thread->cpu_init();
 			thread->gpr[3] = v128::from64(0, args[0]);
@@ -742,7 +731,7 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 			thread->gpr[5] = v128::from64(0, args[2]);
 			thread->gpr[6] = v128::from64(0, args[3]);
 
-			thread->status_npc = {SPU_STATUS_RUNNING, img.first.entry_point};
+			thread->status_npc = {SPU_STATUS_RUNNING, img.first};
 		}
 	}
 
@@ -1113,7 +1102,7 @@ error_code sys_spu_thread_group_join(ppu_thread& ppu, u32 id, vm::ptr<u32> cause
 			thread_ctrl::wait_on(ppu.state, state);
 		}
 	}
-	while (0);
+	while (false);
 
 	if (!cause)
 	{
@@ -1851,7 +1840,7 @@ error_code sys_raw_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<void> at
 			index = 0;
 	}
 
-	const u32 tid = idm::make<named_thread<spu_thread>>(fmt::format("RawSPU[0x%x] ", index), nullptr, index, "", index);
+	const u32 tid = idm::make<named_thread<spu_thread>>(nullptr, index, "", index);
 
 	spu_thread::g_raw_spu_id[index] = (ensure(tid));
 
@@ -1899,7 +1888,7 @@ error_code sys_isolated_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<voi
 
 	const u32 ls_addr = RAW_SPU_BASE_ADDR + RAW_SPU_OFFSET * index;
 
-	const auto thread = idm::make_ptr<named_thread<spu_thread>>(fmt::format("IsoSPU[0x%x] ", index), nullptr, index, "", index, true);
+	const auto thread = idm::make_ptr<named_thread<spu_thread>>(nullptr, index, "", index, true);
 
 	thread->gpr[3] = v128::from64(0, arg1);
 	thread->gpr[4] = v128::from64(0, arg2);
@@ -1912,7 +1901,7 @@ error_code sys_isolated_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<voi
 	img.load(obj);
 
 	auto image_info = idm::get<lv2_obj, lv2_spu_image>(img.entry_point);
-	img.deploy(thread->ls, image_info->segs.get_ptr(), image_info->nsegs);
+	img.deploy(thread->ls, std::span(image_info->segs.get_ptr(), image_info->nsegs));
 
 	thread->write_reg(ls_addr + RAW_SPU_PROB_OFFSET + SPU_NPC_offs, image_info->e_entry);
 	ensure(idm::remove_verify<lv2_obj, lv2_spu_image>(img.entry_point, std::move(image_info)));
@@ -1989,7 +1978,7 @@ error_code raw_spu_destroy(ppu_thread& ppu, u32 id)
 
 	(*thread)();
 
-	if (idm::withdraw<named_thread<spu_thread>>(idm_id, [&](spu_thread& spu) -> CellError
+	if (auto ret = idm::withdraw<named_thread<spu_thread>>(idm_id, [&](spu_thread& spu) -> CellError
 	{
 		if (std::addressof(spu) != std::addressof(*thread))
 		{
@@ -1998,7 +1987,7 @@ error_code raw_spu_destroy(ppu_thread& ppu, u32 id)
 
 		spu.cleanup();
 		return {};
-	}).ret)
+	}); !ret || ret.ret)
 	{
 		// Other thread destroyed beforehead
 		return CELL_ESRCH;
@@ -2026,7 +2015,7 @@ error_code sys_isolated_spu_destroy(ppu_thread& ppu, u32 id)
 }
 
 template <bool isolated = false>
-error_code raw_spu_create_interrupt_tag(u32 id, u32 class_id, u32 hwthread, vm::ptr<u32> intrtag)
+error_code raw_spu_create_interrupt_tag(u32 id, u32 class_id, u32 /*hwthread*/, vm::ptr<u32> intrtag)
 {
 	if (class_id != 0 && class_id != 2)
 	{

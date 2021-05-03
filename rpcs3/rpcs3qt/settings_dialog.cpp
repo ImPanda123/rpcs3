@@ -50,8 +50,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	: QDialog(parent)
 	, m_tab_index(tab_index)
 	, ui(new Ui::settings_dialog)
-	, m_gui_settings(gui_settings)
-	, m_emu_settings(emu_settings)
+	, m_gui_settings(std::move(gui_settings))
+	, m_emu_settings(std::move(emu_settings))
 {
 	ui->setupUi(this);
 	ui->buttonBox->button(QDialogButtonBox::StandardButton::Close)->setFocus();
@@ -127,7 +127,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 			}
 		}
 
-		std::vector<std::string> selected_ls(selected.begin(), selected.end());
+		const std::vector<std::string> selected_ls(selected.begin(), selected.end());
 		m_emu_settings->SaveSelectedLibraries(selected_ls);
 		m_emu_settings->SaveSettings();
 
@@ -193,9 +193,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->spuCache, emu_settings_type::SPUCache);
 	SubscribeTooltip(ui->spuCache, tooltips.settings.spu_cache);
 
-	m_emu_settings->EnhanceCheckBox(ui->enableScheduler, emu_settings_type::EnableThreadScheduler);
-	SubscribeTooltip(ui->enableScheduler, tooltips.settings.enable_thread_scheduler);
-
 	m_emu_settings->EnhanceCheckBox(ui->lowerSPUThrPrio, emu_settings_type::LowerSPUThreadPrio);
 	SubscribeTooltip(ui->lowerSPUThrPrio, tooltips.settings.lower_spu_thread_priority);
 
@@ -205,10 +202,29 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->accurateXFloat, emu_settings_type::AccurateXFloat);
 	SubscribeTooltip(ui->accurateXFloat, tooltips.settings.accurate_xfloat);
 
+	m_emu_settings->EnhanceCheckBox(ui->fullWidthAVX512, emu_settings_type::FullWidthAVX512);
+	SubscribeTooltip(ui->fullWidthAVX512, tooltips.settings.full_width_avx512);
+	ui->fullWidthAVX512->setEnabled(utils::has_avx512());
+
 	// Comboboxes
 
 	m_emu_settings->EnhanceComboBox(ui->spuBlockSize, emu_settings_type::SPUBlockSize);
 	SubscribeTooltip(ui->gb_spuBlockSize, tooltips.settings.spu_block_size);
+
+	m_emu_settings->EnhanceComboBox(ui->threadsched, emu_settings_type::ThreadSchedulerMode);
+	if (constexpr u32 min_thread_count = 12; utils::get_thread_count() < min_thread_count)
+	{
+		ui->gb_threadsched->setDisabled(true);
+		SubscribeTooltip(ui->gb_threadsched,
+			tr(
+				"Changing the thread scheduler is not supported on CPUs with less than %0 threads.\n"
+				"\n"
+				"Control how RPCS3 utilizes the threads of your system.\n"
+				"Each option heavily depends on the game and on your CPU, it's recommended to try each option to find out which performs the best."
+			).arg(min_thread_count));
+	}
+	else
+		SubscribeTooltip(ui->gb_threadsched, tooltips.settings.enable_thread_scheduler);
 
 	m_emu_settings->EnhanceComboBox(ui->preferredSPUThreads, emu_settings_type::PreferredSPUThreads, true);
 	SubscribeTooltip(ui->gb_spu_threads, tooltips.settings.preferred_spu_threads);
@@ -441,8 +457,12 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		ui->gb_resolutionScale->setEnabled(!checked);
 		ui->gb_minimumScalableDimension->setEnabled(!checked);
 		ui->gb_anisotropicFilter->setEnabled(!checked);
+		ui->vulkansched->setEnabled(!checked);
 	};
 	connect(ui->strictModeRendering, &QCheckBox::clicked, this, onStrictRenderingMode);
+
+	m_emu_settings->EnhanceCheckBox(ui->asyncTextureStreaming, emu_settings_type::VulkanAsyncTextureUploads);
+	SubscribeTooltip(ui->asyncTextureStreaming, tooltips.settings.async_texture_streaming);
 
 	// Radio buttons
 
@@ -540,14 +560,14 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	m_old_renderer = ui->renderBox->currentText();
 
-	auto set_renderer = [r_creator, this](QString text)
+	const auto set_renderer = [r_creator, this](const QString& text)
 	{
 		if (text.isEmpty())
 		{
 			return;
 		}
 
-		auto switchTo = [r_creator, text, this](render_creator::render_info renderer)
+		const auto switchTo = [r_creator, text, this](const render_creator::render_info& renderer)
 		{
 			// Reset other adapters to old config
 			for (const auto& render : r_creator->renderers)
@@ -606,7 +626,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		}
 	};
 
-	auto set_adapter = [r_creator, this](QString text)
+	const auto set_adapter = [r_creator, this](const QString& text)
 	{
 		if (text.isEmpty())
 		{
@@ -638,15 +658,17 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	connect(ui->graphicsAdapterBox, &QComboBox::currentTextChanged, set_adapter);
 	connect(ui->renderBox, &QComboBox::currentTextChanged, set_renderer);
 
-	auto fix_gl_legacy = [=, this](const QString& text)
+	auto apply_renderer_specific_options = [=, this](const QString& text)
 	{
-		ui->glLegacyBuffers->setEnabled(text == r_creator->OpenGL.name);
+		// Vulkan-only
+		ui->asyncTextureStreaming->setEnabled(text == r_creator->Vulkan.name);
+		ui->vulkansched->setEnabled(text == r_creator->Vulkan.name);
 	};
 
 	// Handle connects to disable specific checkboxes that depend on GUI state.
 	onStrictRenderingMode(ui->strictModeRendering->isChecked());
-	fix_gl_legacy(ui->renderBox->currentText()); // Init
-	connect(ui->renderBox, &QComboBox::currentTextChanged, fix_gl_legacy);
+	apply_renderer_specific_options(ui->renderBox->currentText()); // Init
+	connect(ui->renderBox, &QComboBox::currentTextChanged, apply_renderer_specific_options);
 
 	//                      _ _         _______    _
 	//       /\            | (_)       |__   __|  | |
@@ -706,7 +728,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 			max = 1;
 			break;
 		case microphone_handler::null:
-		default:
 			break;
 		}
 
@@ -736,7 +757,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		change_microphone_type(ui->microphoneBox->currentIndex());
 	};
 
-	auto change_microphone_device = [mic_none, propagate_used_devices, this](u32 next_index, QString text)
+	const auto change_microphone_device = [mic_none, propagate_used_devices, this](u32 next_index, const QString& text)
 	{
 		m_emu_settings->SetSetting(emu_settings_type::MicrophoneDevices, m_emu_settings->m_microphone_creator.set_device(next_index, text));
 		if (next_index < 4 && text == mic_none)
@@ -983,6 +1004,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceComboBox(ui->sleepTimersAccuracy, emu_settings_type::SleepTimersAccuracy);
 	SubscribeTooltip(ui->gb_sleep_timers_accuracy, tooltips.settings.sleep_timers_accuracy);
 
+	m_emu_settings->EnhanceComboBox(ui->vulkansched, emu_settings_type::VulkanAsyncSchedulerDriver);
+	SubscribeTooltip(ui->gb_vulkansched, tooltips.settings.vulkan_async_scheduler);
+
 	// Sliders
 
 	EnhanceSlider(emu_settings_type::DriverWakeUpDelay, ui->wakeupDelay, ui->wakeupText, tr(reinterpret_cast<const char*>(u8"%0 µs"), "Driver wake up delay"));
@@ -1062,7 +1086,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	SubscribeTooltip(ui->hleList, tooltips.settings.hle_list);
 	ui->searchBox->setPlaceholderText(tr("Search libraries", "Library search box"));
 
-	auto on_lib_state_changed = [this](QString text)
+	const auto on_lib_state_changed = [this](const QString& text)
 	{
 		const QString search_term = text.toLower();
 		std::vector<QListWidgetItem*> items, items2;
@@ -1228,6 +1252,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		ui->perfOverlayCenterY->setEnabled(enabled);
 		ui->perfOverlayFramerateGraphEnabled->setEnabled(enabled);
 		ui->perfOverlayFrametimeGraphEnabled->setEnabled(enabled);
+		ui->perf_overlay_framerate_datapoints->setEnabled(enabled);
+		ui->perf_overlay_frametime_datapoints->setEnabled(enabled);
 	};
 	enable_perf_overlay_options(ui->perfOverlayEnabled->isChecked());
 	connect(ui->perfOverlayEnabled, &QCheckBox::clicked, enable_perf_overlay_options);
@@ -1414,9 +1440,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 			QString glossary;
 
-			for (const auto& [format, description] : window_title_glossary)
+			for (const auto& entry : window_title_glossary)
 			{
-				glossary += format + "\t = " + description + "\n";
+				glossary += entry.first + "\t = " + entry.second + "\n";
 			}
 
 			return tr("Glossary:\n\n%0\nPreview:\n\n%1\n", "Game window title").arg(glossary).arg(game_window_title);
@@ -1481,6 +1507,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		SubscribeTooltip(ui->cb_show_pkg_install, tooltips.settings.show_pkg_install);
 
 		SubscribeTooltip(ui->cb_show_pup_install, tooltips.settings.show_pup_install);
+
+		SubscribeTooltip(ui->cb_show_obsolete_cfg_dialog, tooltips.settings.show_obsolete_cfg);
 
 		SubscribeTooltip(ui->gb_updates, tooltips.settings.check_update_start);
 
@@ -1560,6 +1588,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		ui->cb_show_boot_game->setChecked(m_gui_settings->GetValue(gui::ib_confirm_boot).toBool());
 		ui->cb_show_pkg_install->setChecked(m_gui_settings->GetValue(gui::ib_pkg_success).toBool());
 		ui->cb_show_pup_install->setChecked(m_gui_settings->GetValue(gui::ib_pup_success).toBool());
+		ui->cb_show_obsolete_cfg_dialog->setChecked(m_gui_settings->GetValue(gui::ib_obsolete_cfg).toBool());
 
 		const QString updates_yes        = tr("Yes", "Updates");
 		const QString updates_background = tr("Background", "Updates");
@@ -1569,7 +1598,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		ui->combo_updates->addItem(updates_background, "background");
 		ui->combo_updates->addItem(updates_no, "false");
 		ui->combo_updates->setCurrentIndex(ui->combo_updates->findData(m_gui_settings->GetValue(gui::m_check_upd_start).toString()));
-		connect(ui->combo_updates, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged), [this](int index)
+		connect(ui->combo_updates, QOverload<int>::of(&QComboBox::currentIndexChanged), [this](int index)
 		{
 			m_gui_settings->SetValue(gui::m_check_upd_start, ui->combo_updates->itemData(index));
 		});
@@ -1647,6 +1676,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		{
 			m_gui_settings->SetValue(gui::ib_pup_success, val);
 		});
+		connect(ui->cb_show_obsolete_cfg_dialog, &QCheckBox::clicked, [this](bool val)
+		{
+			m_gui_settings->SetValue(gui::ib_obsolete_cfg, val);
+		});
 
 		connect(ui->cb_custom_colors, &QCheckBox::clicked, [this](bool val)
 		{
@@ -1662,15 +1695,15 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 			QColorDialog dlg(old_color, this);
 			dlg.setWindowTitle(title);
 			dlg.setOptions(QColorDialog::ShowAlphaChannel);
-			for (int i = 0; i < dlg.customCount(); i++)
+			for (int i = 0; i < QColorDialog::customCount(); i++)
 			{
-				dlg.setCustomColor(i, m_gui_settings->GetCustomColor(i));
+				QColorDialog::setCustomColor(i, m_gui_settings->GetCustomColor(i));
 			}
 			if (dlg.exec() == QColorDialog::Accepted)
 			{
-				for (int i = 0; i < dlg.customCount(); i++)
+				for (int i = 0; i < QColorDialog::customCount(); i++)
 				{
-					m_gui_settings->SetCustomColor(i, dlg.customColor(i));
+					m_gui_settings->SetCustomColor(i, QColorDialog::customColor(i));
 				}
 				m_gui_settings->SetValue(color, dlg.selectedColor());
 				button->setIcon(gui::utils::get_colorized_icon(button->icon(), old_color, dlg.selectedColor(), true));
@@ -1705,8 +1738,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	//                            |___/
 
 	// Checkboxes: gpu debug options
-	m_emu_settings->EnhanceCheckBox(ui->glLegacyBuffers, emu_settings_type::LegacyBuffers);
-	SubscribeTooltip(ui->glLegacyBuffers, tooltips.settings.gl_legacy_buffers);
+	m_emu_settings->EnhanceCheckBox(ui->renderdocCompatibility, emu_settings_type::RenderdocCompatibility);
+	SubscribeTooltip(ui->renderdocCompatibility, tooltips.settings.renderdoc_compatibility);
 
 	m_emu_settings->EnhanceCheckBox(ui->forceHighpZ, emu_settings_type::ForceHighpZ);
 	SubscribeTooltip(ui->forceHighpZ, tooltips.settings.force_high_pz);
@@ -1769,6 +1802,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->accurateRSXAccess, emu_settings_type::AccurateRSXAccess);
 	SubscribeTooltip(ui->accurateRSXAccess, tooltips.settings.accurate_rsx_access);
 
+	m_emu_settings->EnhanceCheckBox(ui->ppuPrecompilation, emu_settings_type::PPULLVMPrecompilation);
+	SubscribeTooltip(ui->ppuPrecompilation, tooltips.settings.ppu_precompilation);
+
 	m_emu_settings->EnhanceCheckBox(ui->hookStFunc, emu_settings_type::HookStaticFuncs);
 	SubscribeTooltip(ui->hookStFunc, tooltips.settings.hook_static_functions);
 
@@ -1791,7 +1827,7 @@ settings_dialog::~settings_dialog()
 	delete ui;
 }
 
-void settings_dialog::EnhanceSlider(emu_settings_type settings_type, QSlider* slider, QLabel* label, const QString& label_text)
+void settings_dialog::EnhanceSlider(emu_settings_type settings_type, QSlider* slider, QLabel* label, const QString& label_text) const
 {
 	m_emu_settings->EnhanceSlider(slider, settings_type);
 
@@ -1951,7 +1987,29 @@ int settings_dialog::exec()
 	QTimer::singleShot(0, [this]{ ui->tab_widget_settings->setCurrentIndex(m_tab_index); });
 
 	// Open a dialog if your config file contained invalid entries
-	QTimer::singleShot(10, [this] { m_emu_settings->OpenCorrectionDialog(this); });
+	QTimer::singleShot(10, [this]
+	{
+		m_emu_settings->OpenCorrectionDialog(this);
+
+		if (!m_emu_settings->ValidateSettings(false))
+		{
+			int result = QMessageBox::No;
+			m_gui_settings->ShowConfirmationBox(
+				tr("Remove obsolete settings?"),
+				tr(
+					"Your config file contains one or more obsolete entries.\n"
+					"Consider that a removal might render them invalid for other versions of RPCS3.\n"
+					"\n"
+					"Do you wish to let the program remove them for you now?\n"
+					"This change will only be final when you save the config."
+				), gui::ib_obsolete_cfg, &result, this);
+
+			if (result == QMessageBox::Yes)
+			{
+				m_emu_settings->ValidateSettings(true);
+			}
+		}
+	});
 
 	return QDialog::exec();
 }

@@ -1,20 +1,13 @@
 #pragma once
 
 #include <array>
-#include <vector>
 #include <numeric>
-#include <deque>
-#include <set>
 
-#include "GCM.h"
 #include "rsx_decode.h"
 #include "RSXTexture.h"
 #include "rsx_vertex_data.h"
 #include "rsx_utils.h"
-#include "Utilities/geometry.h"
-
-extern u64 get_system_time();
-extern bool is_primitive_disjointed(rsx::primitive_type);
+#include "Emu/Cell/timers.hpp"
 
 namespace rsx
 {
@@ -70,16 +63,16 @@ namespace rsx
 	class draw_clause
 	{
 		// Stores the first and count argument from draw/draw indexed parameters between begin/end clauses.
-		simple_array<draw_range_t> draw_command_ranges;
+		simple_array<draw_range_t> draw_command_ranges{};
 
 		// Stores rasterization barriers for primitive types sensitive to adjacency
-		simple_array<barrier_t> draw_command_barriers;
+		simple_array<barrier_t> draw_command_barriers{};
 
 		// Counter used to parse the commands in order
-		u32 current_range_index;
+		u32 current_range_index{};
 
 		// Location of last execution barrier
-		u32 last_execution_barrier_index;
+		u32 last_execution_barrier_index{};
 
 		// Helper functions
 		// Add a new draw command
@@ -109,14 +102,14 @@ namespace rsx
 		}
 
 	public:
-		primitive_type primitive;
-		draw_command command;
+		primitive_type primitive{};
+		draw_command command{};
 
-		bool is_immediate_draw;          // Set if part of the draw is submitted via push registers
-		bool is_disjoint_primitive;      // Set if primitive type does not rely on adjacency information
-		bool primitive_barrier_enable;   // Set once to signal that a primitive restart barrier can be inserted
+		bool is_immediate_draw{};          // Set if part of the draw is submitted via push registers
+		bool is_disjoint_primitive{};      // Set if primitive type does not rely on adjacency information
+		bool primitive_barrier_enable{};   // Set once to signal that a primitive restart barrier can be inserted
 
-		simple_array<u32> inline_vertex_array;
+		simple_array<u32> inline_vertex_array{};
 
 		void insert_command_barrier(command_barrier_type type, u32 arg)
 		{
@@ -297,21 +290,7 @@ namespace rsx
 			return count;
 		}
 
-		void reset(rsx::primitive_type type)
-		{
-			current_range_index = ~0u;
-			last_execution_barrier_index = 0;
-
-			command = draw_command::none;
-			primitive = type;
-			primitive_barrier_enable = false;
-
-			draw_command_ranges.clear();
-			draw_command_barriers.clear();
-			inline_vertex_array.clear();
-
-			is_disjoint_primitive = is_primitive_disjointed(primitive);
-		}
+		void reset(rsx::primitive_type type);
 
 		void begin()
 		{
@@ -478,8 +457,8 @@ namespace rsx
 	struct rsx_state
 	{
 	public:
-		std::array<u32, 0x10000 / 4> registers;
-		u32 register_previous_value;
+		std::array<u32, 0x10000 / 4> registers{};
+		u32 register_previous_value{};
 
 		template<u32 opcode>
 		using decoded_type = typename registers_decoder<opcode>::decoded_type;
@@ -491,7 +470,7 @@ namespace rsx
 			return decoded_type<opcode>(register_value);
 		}
 
-		rsx_state &operator=(const rsx_state& in)
+		rsx_state& operator=(const rsx_state& in)
 		{
 			registers = in.registers;
 			transform_program = in.transform_program;
@@ -500,14 +479,23 @@ namespace rsx
 			return *this;
 		}
 
+		rsx_state& operator=(rsx_state&& in)
+		{
+			registers = std::move(in.registers);
+			transform_program = std::move(in.transform_program);
+			transform_constants = std::move(in.transform_constants);
+			register_vertex_info = std::move(in.register_vertex_info);
+			return *this;
+		}
+
 		std::array<fragment_texture, 16> fragment_textures;
 		std::array<vertex_texture, 4> vertex_textures;
 
 
-		std::array<u32, 512 * 4> transform_program;
-		std::array<u32[4], 512> transform_constants;
+		std::array<u32, 512 * 4> transform_program{};
+		std::array<u32[4], 512> transform_constants{};
 
-		draw_clause current_draw_clause;
+		draw_clause current_draw_clause{};
 
 		/**
 		* RSX can sources vertex attributes from 2 places:
@@ -526,7 +514,7 @@ namespace rsx
 		* Note that behavior when both vertex array and immediate value system are disabled but vertex attrib mask
 		* request inputs is unknown.
 		*/
-		std::array<register_vertex_data_info, 16> register_vertex_info;
+		std::array<register_vertex_data_info, 16> register_vertex_info{};
 		std::array<data_array_format_info, 16> vertex_arrays_info;
 
 	private:
@@ -537,11 +525,23 @@ namespace rsx
 		}
 
 	public:
-		rsx_state() :
-			fragment_textures(fill_array<fragment_texture>(registers, std::make_index_sequence<16>())),
-			vertex_textures(fill_array<vertex_texture>(registers, std::make_index_sequence<4>())),
-			vertex_arrays_info(fill_array<data_array_format_info>(registers, std::make_index_sequence<16>()))
+		rsx_state()
+			: fragment_textures(fill_array<fragment_texture>(registers, std::make_index_sequence<16>()))
+			, vertex_textures(fill_array<vertex_texture>(registers, std::make_index_sequence<4>()))
+			, vertex_arrays_info(fill_array<data_array_format_info>(registers, std::make_index_sequence<16>()))
 		{
+		}
+
+		rsx_state(const rsx_state& other)
+			: rsx_state()
+		{
+			this->operator=(other);
+		}
+
+		rsx_state(rsx_state&& other)
+			: rsx_state()
+		{
+			this->operator=(std::move(other));
 		}
 
 		~rsx_state() = default;
@@ -1599,7 +1599,7 @@ namespace rsx
 			return decode<NV0039_OFFSET_OUT>().output_offset();
 		}
 
-		u32 nv0039_output_location()
+		u32 nv0039_output_location() const
 		{
 			return decode<NV0039_SET_CONTEXT_DMA_BUFFER_OUT>().output_dma();
 		}

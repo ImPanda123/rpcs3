@@ -1,6 +1,5 @@
 #pragma once // No BOM and only basic ASCII in this header, or a neko will die
 
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -138,15 +137,9 @@ namespace logs
 	std::vector<std::string> get_channels();
 
 	// Helper: no additional name specified
-	constexpr const char* make_channel_name(const char* name)
+	consteval const char* make_channel_name(const char* name, const char* alt = nullptr)
 	{
-		return name;
-	}
-
-	// Helper: special channel name specified
-	constexpr const char* make_channel_name(const char*, const char* name, ...)
-	{
-		return name;
+		return alt ? alt : name;
 	}
 
 	// Called in main()

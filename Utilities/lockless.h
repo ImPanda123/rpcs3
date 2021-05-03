@@ -161,11 +161,6 @@ public:
 		return m_ptr == rhs.m_ptr;
 	}
 
-	bool operator !=(const lf_queue_iterator& rhs) const
-	{
-		return m_ptr != rhs.m_ptr;
-	}
-
 	T& operator *() const
 	{
 		return m_ptr->m_data;
@@ -308,7 +303,7 @@ public:
 	}
 
 	template <atomic_wait::op Flags = atomic_wait::op::eq>
-	void wait(std::nullptr_t null = nullptr) noexcept
+	void wait(std::nullptr_t /*null*/ = nullptr) noexcept
 	{
 		if (m_head == nullptr)
 		{

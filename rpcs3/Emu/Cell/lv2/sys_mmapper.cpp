@@ -2,7 +2,6 @@
 #include "sys_mmapper.h"
 
 #include "Emu/Cell/PPUThread.h"
-#include "sys_ppu_thread.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Memory/vm_var.h"
 #include "sys_memory.h"
@@ -50,7 +49,7 @@ error_code sys_mmapper_allocate_address(ppu_thread& ppu, u64 size, u64 flags, u6
 {
 	ppu.state += cpu_flag::wait;
 
-	sys_mmapper.error("sys_mmapper_allocate_address(size=0x%x, flags=0x%x, alignment=0x%x, alloc_addr=*0x%x)", size, flags, alignment, alloc_addr);
+	sys_mmapper.warning("sys_mmapper_allocate_address(size=0x%x, flags=0x%x, alignment=0x%x, alloc_addr=*0x%x)", size, flags, alignment, alloc_addr);
 
 	if (size % 0x10000000)
 	{
@@ -93,7 +92,7 @@ error_code sys_mmapper_allocate_fixed_address(ppu_thread& ppu)
 {
 	ppu.state += cpu_flag::wait;
 
-	sys_mmapper.error("sys_mmapper_allocate_fixed_address()");
+	sys_mmapper.warning("sys_mmapper_allocate_fixed_address()");
 
 	if (!vm::map(0xB0000000, 0x10000000, SYS_MEMORY_PAGE_SIZE_1M))
 	{
@@ -115,10 +114,10 @@ error_code sys_mmapper_allocate_shared_memory(ppu_thread& ppu, u64 ipc_key, u64 
 	}
 
 	// Check page granularity
-	switch (flags & SYS_MEMORY_PAGE_SIZE_MASK)
+	switch (flags & SYS_MEMORY_GRANULARITY_MASK)
 	{
 	case 0:
-	case SYS_MEMORY_PAGE_SIZE_1M:
+	case SYS_MEMORY_GRANULARITY_1M:
 	{
 		if (size % 0x100000)
 		{
@@ -127,7 +126,7 @@ error_code sys_mmapper_allocate_shared_memory(ppu_thread& ppu, u64 ipc_key, u64 
 
 		break;
 	}
-	case SYS_MEMORY_PAGE_SIZE_64K:
+	case SYS_MEMORY_GRANULARITY_64K:
 	{
 		if (size % 0x10000)
 		{
@@ -172,10 +171,10 @@ error_code sys_mmapper_allocate_shared_memory_from_container(ppu_thread& ppu, u6
 	}
 
 	// Check page granularity.
-	switch (flags & SYS_MEMORY_PAGE_SIZE_MASK)
+	switch (flags & SYS_MEMORY_GRANULARITY_MASK)
 	{
 	case 0:
-	case SYS_MEMORY_PAGE_SIZE_1M:
+	case SYS_MEMORY_GRANULARITY_1M:
 	{
 		if (size % 0x100000)
 		{
@@ -184,7 +183,7 @@ error_code sys_mmapper_allocate_shared_memory_from_container(ppu_thread& ppu, u6
 
 		break;
 	}
-	case SYS_MEMORY_PAGE_SIZE_64K:
+	case SYS_MEMORY_GRANULARITY_64K:
 	{
 		if (size % 0x10000)
 		{
@@ -241,9 +240,9 @@ error_code sys_mmapper_allocate_shared_memory_ext(ppu_thread& ppu, u64 ipc_key, 
 		return CELL_EALIGN;
 	}
 
-	switch (flags & SYS_MEMORY_PAGE_SIZE_MASK)
+	switch (flags & SYS_MEMORY_GRANULARITY_MASK)
 	{
-	case SYS_MEMORY_PAGE_SIZE_1M:
+	case SYS_MEMORY_GRANULARITY_1M:
 	case 0:
 	{
 		if (size % 0x100000)
@@ -253,7 +252,7 @@ error_code sys_mmapper_allocate_shared_memory_ext(ppu_thread& ppu, u64 ipc_key, 
 
 		break;
 	}
-	case SYS_MEMORY_PAGE_SIZE_64K:
+	case SYS_MEMORY_GRANULARITY_64K:
 	{
 		if (size % 0x10000)
 		{
@@ -459,7 +458,7 @@ error_code sys_mmapper_free_address(ppu_thread& ppu, u32 addr)
 {
 	ppu.state += cpu_flag::wait;
 
-	sys_mmapper.error("sys_mmapper_free_address(addr=0x%x)", addr);
+	sys_mmapper.warning("sys_mmapper_free_address(addr=0x%x)", addr);
 
 	if (addr < 0x20000000 || addr >= 0xC0000000)
 	{

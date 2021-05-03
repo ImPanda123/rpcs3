@@ -23,56 +23,7 @@ target_link_libraries(3rdparty_zlib INTERFACE ${ZLIB_LIBRARY})
 target_include_directories(3rdparty_zlib INTERFACE ${ZLIB_INCLUDE_DIR})
 
 # 7z sdk
-if(WIN32)
-	add_library(3rdparty_7z STATIC EXCLUDE_FROM_ALL
-		7z/Sha256.c
-		7z/Ppmd7Dec.c
-		7z/XzDec.c
-		7z/XzEnc.c
-		7z/Lzma2Dec.c
-		7z/XzCrc64.c
-		7z/DllSecur.c
-		7z/Lzma2DecMt.c
-		7z/BraIA64.c
-		7z/7zFile.c
-		7z/7zStream.c
-		7z/Lzma86Enc.c
-		7z/Threads.c
-		7z/7zAlloc.c
-		7z/LzmaEnc.c
-		7z/MtCoder.c
-		7z/Lzma86Dec.c
-		7z/Sort.c
-		7z/LzFindMt.c
-		7z/7zDec.c
-		7z/Bcj2.c
-		7z/Ppmd7.c
-		7z/Bra86.c
-		7z/Bcj2Enc.c
-		7z/7zBuf.c
-		7z/Aes.c
-		7z/AesOpt.c
-		7z/XzCrc64Opt.c
-		7z/7zArcIn.c
-		7z/Lzma2Enc.c
-		7z/Bra.c
-		7z/7zCrcOpt.c
-		7z/7zBuf2.c
-		7z/LzFind.c
-		7z/Ppmd7Enc.c
-		7z/CpuArch.c
-		7z/Delta.c
-		7z/XzIn.c
-		7z/Alloc.c
-		7z/Xz.c
-		7z/LzmaDec.c
-		7z/LzmaLib.c
-		7z/7zCrc.c
-		7z/MtDec.c)
-	target_include_directories(3rdparty_7z INTERFACE 7z)
-else()
-	add_library(3rdparty_7z INTERFACE)
-endif()
+add_subdirectory(7z EXCLUDE_FROM_ALL)
 
 add_library(3rdparty_flatbuffers INTERFACE)
 target_include_directories(3rdparty_flatbuffers INTERFACE flatbuffers/include)
@@ -123,7 +74,7 @@ if(CMAKE_SYSTEM MATCHES "DragonFly|FreeBSD")
 elseif(MSVC)
 	# Windows time.h defines timespec but doesn't add any flag for it, which makes libusb attempt to define it again
 	add_definitions(-DHAVE_STRUCT_TIMESPEC=1)
-	add_subdirectory(libusb_cmake EXCLUDE_FROM_ALL)
+	add_subdirectory(libusb EXCLUDE_FROM_ALL)
 else()
 	if(USE_SYS_LIBUSB)
 		# we have the system libusb and have selected to use it
@@ -132,7 +83,7 @@ else()
 	else()
 		# we don't have the system libusb, so we compile from submodule
 		unset(LIBUSB_LIBRARIES CACHE)
-		add_subdirectory(libusb_cmake EXCLUDE_FROM_ALL)
+		add_subdirectory(libusb EXCLUDE_FROM_ALL)
 	endif()
 endif()
 
@@ -338,6 +289,8 @@ if(USE_VULKAN)
 	endif()
 endif()
 
+# AsmJit
+add_subdirectory(asmjit EXCLUDE_FROM_ALL)
 
 # OpenAL
 if (MSVC)
@@ -462,20 +415,7 @@ else()
 endif()
 
 # CURL
-if(USE_SYSTEM_CURL)
-	message("-- RPCS3: using shared libcurl")
-	find_package(CURL REQUIRED)
-	add_library(libcurl INTERFACE)
-	target_link_libraries(libcurl INTERFACE CURL::libcurl)
-else()
-	message("-- RPCS3: building libcurl + wolfssl submodules")
-	option(BUILD_CURL_EXE "Set to ON to build curl executable." OFF)
-	option(CMAKE_USE_WOLFSSL "enable wolfSSL for SSL/TLS" ON)
-	option(HTTP_ONLY "disables all protocols except HTTP (This overrides all CURL_DISABLE_* options)" ON)
-	option(CURL_ZLIB "Set to ON to enable building curl with zlib support." OFF)
-	set(CURL_CA_PATH "none" CACHE STRING "Location of default CA path. Set 'none' to disable or 'auto' for auto-detection. Defaults to 'auto'.")
-	add_subdirectory(curl EXCLUDE_FROM_ALL)
-endif()
+add_subdirectory(curl EXCLUDE_FROM_ALL)
 
 # add nice ALIAS targets for ease of use
 if(USE_SYS_LIBUSB)

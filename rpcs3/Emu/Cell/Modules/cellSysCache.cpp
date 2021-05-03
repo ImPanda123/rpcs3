@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Emu/System.h"
+#include "Emu/system_utils.hpp"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
@@ -32,7 +33,7 @@ extern lv2_fs_mount_point g_mp_sys_dev_hdd1;
 
 struct syscache_info
 {
-	const std::string cache_root = Emu.GetHdd1Dir() + "/caches/";
+	const std::string cache_root = rpcs3::utils::get_hdd1_dir() + "/caches/";
 
 	stx::init_mutex init;
 
@@ -68,7 +69,7 @@ struct syscache_info
 		}
 	}
 
-	void clear(bool remove_root) noexcept
+	void clear(bool remove_root) const noexcept
 	{
 		// Clear cache
 		if (!vfs::host::remove_all(cache_root + cache_id, cache_root, &g_mp_sys_dev_hdd1, remove_root))
@@ -79,9 +80,9 @@ struct syscache_info
 		// Poison opened files in /dev_hdd1 to return CELL_EIO on access
 		if (remove_root)
 		{
-			idm::select<lv2_fs_object, lv2_file>([](u32 id, lv2_file& file)
+			idm::select<lv2_fs_object, lv2_file>([](u32 /*id*/, lv2_file& file)
 			{
-				if (std::memcmp("/dev_hdd1", file.name.data(), 9) == 0)
+				if (file.file && file.mp->flags & lv2_mp_flag::cache)
 				{
 					file.lock = 2;
 				}

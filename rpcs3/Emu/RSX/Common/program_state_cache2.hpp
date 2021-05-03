@@ -3,7 +3,7 @@
 #include "ProgramStateCache.h"
 
 #include "emmintrin.h"
-#include "immintrin.h"
+#include "util/asm.hpp"
 
 template <typename Traits>
 void program_state_cache<Traits>::fill_fragment_constants_buffer(gsl::span<f32> dst_buffer, const RSXFragmentProgram &fragment_program, bool sanitize) const
@@ -25,11 +25,10 @@ void program_state_cache<Traits>::fill_fragment_constants_buffer(gsl::span<f32> 
 		if (!patch_table.is_empty())
 		{
 			_mm_store_ps(tmp, _mm_castsi128_ps(shuffled_vector));
-			bool patched;
 
 			for (int i = 0; i < 4; ++i)
 			{
-				patched = false;
+				bool patched = false;
 				for (auto& e : patch_table.db)
 				{
 					//TODO: Use fp comparison with fabsf without hurting performance
@@ -52,11 +51,11 @@ void program_state_cache<Traits>::fill_fragment_constants_buffer(gsl::span<f32> 
 			const auto masked = _mm_and_si128(shuffled_vector, _mm_set1_epi32(0x7fffffff));
 			const auto valid = _mm_cmplt_epi32(masked, _mm_set1_epi32(0x7f800000));
 			const auto result = _mm_and_si128(shuffled_vector, valid);
-			_mm_stream_si128(std::bit_cast<__m128i*>(dst), result);
+			_mm_stream_si128(utils::bless<__m128i>(dst), result);
 		}
 		else
 		{
-			_mm_stream_si128(std::bit_cast<__m128i*>(dst), shuffled_vector);
+			_mm_stream_si128(utils::bless<__m128i>(dst), shuffled_vector);
 		}
 
 		dst += 4;

@@ -2,6 +2,8 @@
 #include "ds3_pad_handler.h"
 #include "Emu/Io/pad_config.h"
 
+#include "util/asm.hpp"
+
 LOG_CHANNEL(ds3_log, "DS3");
 
 struct ds3_rumble
@@ -107,7 +109,7 @@ ds3_pad_handler::~ds3_pad_handler()
 
 u32 ds3_pad_handler::get_battery_level(const std::string& padId)
 {
-	std::shared_ptr<ds3_device> device = get_hid_device(padId);
+	const std::shared_ptr<ds3_device> device = get_hid_device(padId);
 	if (!device || !device->hidDevice)
 	{
 		return 0;
@@ -444,14 +446,14 @@ void ds3_pad_handler::get_extended_info(const std::shared_ptr<PadDevice>& device
 
 #ifdef _WIN32
 	// Official Sony Windows DS3 driver seems to do the same modification of this value as the ps3
-	pad->m_sensors[0].m_value = *reinterpret_cast<le_t<u16, 1>*>(&ds3dev->padData[41 + DS3_HID_OFFSET]);
+	pad->m_sensors[0].m_value = *utils::bless<le_t<u16, 1>>(&ds3dev->padData[41 + DS3_HID_OFFSET]);
 #else
 	// When getting raw values from the device this adjustement is needed
-	pad->m_sensors[0].m_value = 512 - (*reinterpret_cast<le_t<u16, 1>*>(&ds3dev->padData[41]) - 512);
+	pad->m_sensors[0].m_value = 512 - (*utils::bless<le_t<u16, 1>>(&ds3dev->padData[41]) - 512);
 #endif
-	pad->m_sensors[1].m_value = *reinterpret_cast<le_t<u16, 1>*>(&ds3dev->padData[45 + DS3_HID_OFFSET]);
-	pad->m_sensors[2].m_value = *reinterpret_cast<le_t<u16, 1>*>(&ds3dev->padData[43 + DS3_HID_OFFSET]);
-	pad->m_sensors[3].m_value = *reinterpret_cast<le_t<u16, 1>*>(&ds3dev->padData[47 + DS3_HID_OFFSET]);
+	pad->m_sensors[1].m_value = *utils::bless<le_t<u16, 1>>(&ds3dev->padData[45 + DS3_HID_OFFSET]);
+	pad->m_sensors[2].m_value = *utils::bless<le_t<u16, 1>>(&ds3dev->padData[43 + DS3_HID_OFFSET]);
+	pad->m_sensors[3].m_value = *utils::bless<le_t<u16, 1>>(&ds3dev->padData[47 + DS3_HID_OFFSET]);
 
 	// Those are formulas used to adjust sensor values in sys_hid code but I couldn't find all the vars.
 	//auto polish_value = [](s32 value, s32 dword_0x0, s32 dword_0x4, s32 dword_0x8, s32 dword_0xC, s32 dword_0x18, s32 dword_0x1C) -> u16
@@ -590,6 +592,7 @@ void ds3_pad_handler::apply_pad_data(const std::shared_ptr<PadDevice>& device, c
 		if (dev->last_battery_level != dev->battery_level)
 		{
 			dev->new_output_data = true;
+			dev->last_battery_level = dev->battery_level;
 		}
 	}
 

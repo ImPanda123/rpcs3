@@ -3,6 +3,7 @@
 
 #include "Emu/system_config.h"
 #include "Emu/IdManager.h"
+#include "Emu/Cell/timers.hpp"
 
 #include "SPUDisAsm.h"
 #include "SPUThread.h"
@@ -16,7 +17,6 @@
 #include "util/sysinfo.hpp"
 
 #include <cmath>
-#include <mutex>
 #include <thread>
 
 #define SPU_OFF_128(x, ...) asmjit::x86::oword_ptr(*cpu, offset32(&spu_thread::x, ##__VA_ARGS__))
@@ -27,8 +27,6 @@
 
 extern const spu_decoder<spu_interpreter_fast> g_spu_interpreter_fast{}; // TODO: avoid
 const spu_decoder<spu_recompiler> s_spu_decoder;
-
-extern u64 get_timebased_time();
 
 std::unique_ptr<spu_recompiler_base> spu_recompiler_base::make_asmjit_recompiler()
 {
@@ -283,9 +281,9 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 			c->vzeroupper();
 		}
 	}
-	else if (utils::has_avx512() && false)
+	else if (utils::has_avx512() && g_cfg.core.full_width_avx512)
 	{
-		// AVX-512 optimized check using 512-bit registers (disabled)
+		// AVX-512 optimized check using 512-bit registers
 		words_align = 64;
 
 		const u32 starta = start & -64;
@@ -1305,11 +1303,11 @@ void spu_recompiler::STOP(spu_opcode_t op)
 	}
 }
 
-void spu_recompiler::LNOP(spu_opcode_t op)
+void spu_recompiler::LNOP(spu_opcode_t)
 {
 }
 
-void spu_recompiler::SYNC(spu_opcode_t op)
+void spu_recompiler::SYNC(spu_opcode_t)
 {
 	// This instruction must be used following a store instruction that modifies the instruction stream.
 	c->lock().or_(asmjit::x86::dword_ptr(asmjit::x86::rsp), 0);
@@ -1324,7 +1322,7 @@ void spu_recompiler::SYNC(spu_opcode_t op)
 	}
 }
 
-void spu_recompiler::DSYNC(spu_opcode_t op)
+void spu_recompiler::DSYNC(spu_opcode_t)
 {
 	// This instruction forces all earlier load, store, and channel instructions to complete before proceeding.
 	c->lock().or_(asmjit::x86::dword_ptr(asmjit::x86::rsp), 0);
@@ -1515,6 +1513,7 @@ void spu_recompiler::RDCH(spu_opcode_t op)
 		c->movdqa(SPU_OFF_128(gpr, op.rt), vr);
 		return;
 	}
+	default: break;
 	}
 
 	c->lea(addr->r64(), get_pc(m_pos));
@@ -2259,7 +2258,7 @@ void spu_recompiler::AVGB(spu_opcode_t op)
 	c->movdqa(SPU_OFF_128(gpr, op.rt), vb);
 }
 
-void spu_recompiler::MTSPR(spu_opcode_t op)
+void spu_recompiler::MTSPR(spu_opcode_t)
 {
 	// Check SPUInterpreter for notes.
 }
@@ -2506,6 +2505,7 @@ void spu_recompiler::WRCH(spu_opcode_t op)
 	{
 		return;
 	}
+	default: break;
 	}
 
 	c->lea(addr->r64(), get_pc(m_pos));
@@ -2581,7 +2581,7 @@ void spu_recompiler::BIHNZ(spu_opcode_t op)
 	});
 }
 
-void spu_recompiler::STOPD(spu_opcode_t op)
+void spu_recompiler::STOPD(spu_opcode_t)
 {
 	STOP(spu_opcode_t{0x3fff});
 }
@@ -2678,7 +2678,7 @@ void spu_recompiler::BISLED(spu_opcode_t op)
 	});
 }
 
-void spu_recompiler::HBR(spu_opcode_t op)
+void spu_recompiler::HBR([[maybe_unused]] spu_opcode_t op)
 {
 }
 
@@ -3186,7 +3186,7 @@ void spu_recompiler::SHLQBYI(spu_opcode_t op)
 	c->movdqa(SPU_OFF_128(gpr, op.rt), va);
 }
 
-void spu_recompiler::NOP(spu_opcode_t op)
+void spu_recompiler::NOP(spu_opcode_t)
 {
 }
 
@@ -3815,7 +3815,7 @@ void spu_recompiler::FRDS(spu_opcode_t op)
 	c->movaps(SPU_OFF_128(gpr, op.rt), va);
 }
 
-void spu_recompiler::FSCRWR(spu_opcode_t op)
+void spu_recompiler::FSCRWR(spu_opcode_t /*op*/)
 {
 	// nop (not implemented)
 }
@@ -4579,11 +4579,11 @@ void spu_recompiler::HEQI(spu_opcode_t op)
 	});
 }
 
-void spu_recompiler::HBRA(spu_opcode_t op)
+void spu_recompiler::HBRA([[maybe_unused]] spu_opcode_t op)
 {
 }
 
-void spu_recompiler::HBRR(spu_opcode_t op)
+void spu_recompiler::HBRR([[maybe_unused]] spu_opcode_t op)
 {
 }
 

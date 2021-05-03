@@ -19,7 +19,7 @@ extern void ppu_finalize(const ppu_module&);
 
 LOG_CHANNEL(sys_overlay);
 
-static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vpath, u64 flags, vm::ptr<u32> entry, fs::file src = {})
+static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vpath, u64 /*flags*/, vm::ptr<u32> entry, fs::file src = {})
 {
 	if (!src)
 	{
@@ -97,6 +97,13 @@ error_code sys_overlay_load_module_by_fd(vm::ptr<u32> ovlmid, u32 fd, u64 offset
 	const auto file = idm::get<lv2_fs_object, lv2_file>(fd);
 
 	if (!file)
+	{
+		return CELL_EBADF;
+	}
+
+	std::lock_guard lock(file->mp->mutex);
+
+	if (!file->file)
 	{
 		return CELL_EBADF;
 	}

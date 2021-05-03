@@ -249,7 +249,7 @@ error_code sys_event_queue_tryreceive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sy
 	while (queue->sq.empty() && count < size && !queue->events.empty())
 	{
 		auto& dest = event_array[count++];
-		auto event = queue->events.front();
+		const auto event = queue->events.front();
 		queue->events.pop_front();
 
 		std::tie(dest.source, dest.data1, dest.data2, dest.data3) = event;
@@ -441,6 +441,7 @@ error_code sys_event_port_connect_local(cpu_thread& cpu, u32 eport_id, u32 equeu
 	}
 
 	port->queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(equeue_id);
+	port->queue_id = equeue_id;
 
 	return CELL_OK;
 }
@@ -467,7 +468,7 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 		return CELL_ESRCH;
 	}
 
-	if (port->type != 3)
+	if (port->type != SYS_EVENT_PORT_IPC)
 	{
 		return CELL_EINVAL;
 	}

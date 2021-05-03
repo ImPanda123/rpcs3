@@ -58,15 +58,12 @@ namespace
 
 	struct draw_command_visitor
 	{
-		using attribute_storage = std::vector<
-			std::variant<rsx::vertex_array_buffer, rsx::vertex_array_register, rsx::empty_vertex_array>>;
-
 		draw_command_visitor(gl::ring_buffer& index_ring_buffer, rsx::vertex_input_layout& vertex_layout)
 			: m_index_ring_buffer(index_ring_buffer)
 			, m_vertex_layout(vertex_layout)
 		{}
 
-		vertex_input_state operator()(const rsx::draw_array_command& command)
+		vertex_input_state operator()(const rsx::draw_array_command& /*command*/)
 		{
 			const u32 vertex_count = rsx::method_registers.current_draw_clause.get_elements_count();
 			const u32 min_index    = rsx::method_registers.current_draw_clause.min_index();
@@ -127,7 +124,7 @@ namespace
 			return{ true, min_index, max_index, index_count, index_offset, std::make_tuple(get_index_type(type), offset_in_index_buffer) };
 		}
 
-		vertex_input_state operator()(const rsx::draw_inlined_array& command)
+		vertex_input_state operator()(const rsx::draw_inlined_array& /*command*/)
 		{
 			const auto stream_length = rsx::method_registers.current_draw_clause.inline_vertex_array.size();
 			const u32 vertex_count = u32(stream_length * sizeof(u32)) / m_vertex_layout.interleaved_blocks[0].attribute_stride;

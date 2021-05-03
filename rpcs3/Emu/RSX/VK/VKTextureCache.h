@@ -1,16 +1,16 @@
 #pragma once
 
+#include "VKAsyncScheduler.h"
+#include "VKDMA.h"
 #include "VKRenderTargets.h"
 #include "VKResourceManager.h"
-#include "VKDMA.h"
 #include "vkutils/image_helpers.h"
 
 #include "../Common/texture_cache.h"
+#include "Emu/Cell/timers.hpp"
 
 #include <memory>
 #include <vector>
-
-extern u64 get_system_time();
 
 namespace vk
 {
@@ -263,7 +263,8 @@ namespace vk
 			// Synchronize, reset dma_fence after waiting
 			vk::wait_for_event(dma_fence.get(), GENERAL_WAIT_TIMEOUT);
 
-			const auto range = get_confirmed_range();
+			// Calculate smallest range to flush - for framebuffers, the raster region is enough
+			const auto range = (context == rsx::texture_upload_context::framebuffer_storage)? get_section_range() : get_confirmed_range();
 			vk::flush_dma(range.start, range.length());
 
 			if (is_swizzled())
@@ -366,7 +367,7 @@ namespace vk
 			block_size = tex.get_section_size();
 		}
 
-		const bool test(u64 ref_frame) const
+		bool test(u64 ref_frame) const
 		{
 			return ref_frame > 0 && frame_tag <= ref_frame;
 		}
@@ -764,14 +765,13 @@ namespace vk
 			dst->pop_layout(cmd);
 		}
 
-		cached_texture_section* create_new_texture(vk::command_buffer& cmd, const utils::address_range &rsx_range, u16 width, u16 height, u16 depth, u16 mipmaps,  u16 pitch,
+		cached_texture_section* create_new_texture(vk::command_buffer& cmd, const utils::address_range &rsx_range, u16 width, u16 height, u16 depth, u16 mipmaps, u16 pitch,
 			u32 gcm_format, rsx::texture_upload_context context, rsx::texture_dimension_extended type, bool swizzled, rsx::texture_create_flags flags) override
 		{
 			const auto section_depth = depth;
 
 			// Define desirable attributes based on type
 			VkImageType image_type;
-			[[maybe_unused]] VkImageViewType image_view_type;
 			VkImageUsageFlags usage_flags = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 			u8 layer = 0;
 
@@ -779,26 +779,22 @@ namespace vk
 			{
 			case rsx::texture_dimension_extended::texture_dimension_1d:
 				image_type = VK_IMAGE_TYPE_1D;
-				image_view_type = VK_IMAGE_VIEW_TYPE_1D;
 				height = 1;
 				depth = 1;
 				layer = 1;
 				break;
 			case rsx::texture_dimension_extended::texture_dimension_2d:
 				image_type = VK_IMAGE_TYPE_2D;
-				image_view_type = VK_IMAGE_VIEW_TYPE_2D;
 				depth = 1;
 				layer = 1;
 				break;
 			case rsx::texture_dimension_extended::texture_dimension_cubemap:
 				image_type = VK_IMAGE_TYPE_2D;
-				image_view_type = VK_IMAGE_VIEW_TYPE_CUBE;
 				depth = 1;
 				layer = 6;
 				break;
 			case rsx::texture_dimension_extended::texture_dimension_3d:
 				image_type = VK_IMAGE_TYPE_3D;
-				image_view_type = VK_IMAGE_VIEW_TYPE_3D;
 				layer = 1;
 				break;
 			default:
@@ -873,7 +869,6 @@ namespace vk
 			region.set_dirty(false);
 
 			image->native_component_map = apply_component_mapping_flags(gcm_format, flags, rsx::default_remap_vector);
-			image->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 			// Its not necessary to lock blit dst textures as they are just reused as necessary
 			switch (context)
@@ -927,19 +922,7 @@ namespace vk
 					rsx::texture_create_flags::default_component_order);
 
 			auto image = section->get_raw_texture();
-			auto subres_range = section->get_raw_view()->info.subresourceRange;
-
-			switch (image->info.format)
-			{
-			case VK_FORMAT_D32_SFLOAT_S8_UINT:
-			case VK_FORMAT_D24_UNORM_S8_UINT:
-				subres_range.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-				break;
-			default:
-				break;
-			}
-
-			change_image_layout(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subres_range);
+			image->set_debug_name(fmt::format("Raw Texture @0x%x", rsx_range.start));
 
 			vk::enter_uninterruptible();
 
@@ -950,38 +933,46 @@ namespace vk
 				input_swizzled = false;
 			}
 
-			vk::upload_image(cmd, image, subresource_layout, gcm_format, input_swizzled, mipmaps, subres_range.aspectMask,
-				*m_texture_upload_heap, upload_heap_align_default, upload_contents_inline);
+			rsx::flags32_t upload_command_flags = initialize_image_layout |
+				(g_cfg.video.vk.asynchronous_texture_streaming? upload_contents_async : upload_contents_inline);
+
+			vk::upload_image(cmd, image, subresource_layout, gcm_format, input_swizzled, mipmaps, image->aspect(),
+				*m_texture_upload_heap, upload_heap_align_default, upload_command_flags);
 
 			vk::leave_uninterruptible();
 
-			// Insert appropriate barrier depending on use
-			VkImageLayout preferred_layout;
-			switch (context)
+			if (context != rsx::texture_upload_context::shader_read)
 			{
-			default:
-				preferred_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				break;
-			case rsx::texture_upload_context::blit_engine_dst:
-				preferred_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-				break;
-			case rsx::texture_upload_context::blit_engine_src:
-				preferred_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-				break;
-			}
+				// Insert appropriate barrier depending on use. Shader read resources should be lazy-initialized before consuming.
+				// TODO: All texture resources should be initialized on use, this is wasteful
 
-			if (preferred_layout != image->current_layout)
-			{
-				change_image_layout(cmd, image, preferred_layout, subres_range);
-			}
-			else
-			{
-				// Insert ordering barrier
-				ensure(preferred_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-				insert_image_memory_barrier(cmd, image->value, image->current_layout, preferred_layout,
-					VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-					VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-					subres_range);
+				VkImageLayout preferred_layout;
+				switch (context)
+				{
+				default:
+					preferred_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					break;
+				case rsx::texture_upload_context::blit_engine_dst:
+					preferred_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+					break;
+				case rsx::texture_upload_context::blit_engine_src:
+					preferred_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+					break;
+				}
+
+				if (preferred_layout != image->current_layout)
+				{
+					image->change_layout(cmd, preferred_layout);
+				}
+				else
+				{
+					// Insert ordering barrier
+					ensure(preferred_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+					insert_image_memory_barrier(cmd, image->value, image->current_layout, preferred_layout,
+						VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+						VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+						{ image->aspect(), 0, image->mipmaps(), 0, image->layers() });
+				}
 			}
 
 			section->last_write_tag = rsx::get_shared_tag();
@@ -1069,6 +1060,10 @@ namespace vk
 
 			if (cmd.access_hint != vk::command_buffer::access_type_hint::all)
 			{
+				// Flush any pending async jobs in case of blockers
+				// TODO: Context-level manager should handle this logic
+				g_fxo->get<async_scheduler_thread>().flush(VK_TRUE);
+
 				// Primary access command queue, must restart it after
 				vk::fence submit_fence(*m_device);
 				cmd.submit(m_submit_queue, VK_NULL_HANDLE, VK_NULL_HANDLE, &submit_fence, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_TRUE);
@@ -1258,12 +1253,12 @@ namespace vk
 			return false;
 		}
 
-		const u32 get_unreleased_textures_count() const override
+		u32 get_unreleased_textures_count() const override
 		{
 			return baseclass::get_unreleased_textures_count() + ::size32(m_temporary_storage);
 		}
 
-		const u32 get_temporary_memory_in_use()
+		u32 get_temporary_memory_in_use()
 		{
 			return m_temporary_memory_size;
 		}

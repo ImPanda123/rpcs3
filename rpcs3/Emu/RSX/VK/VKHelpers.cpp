@@ -13,8 +13,6 @@
 #include "vkutils/scratch.h"
 #include "vkutils/device.h"
 #include "Emu/RSX/rsx_methods.h"
-#include "Utilities/mutex.h"
-#include "Utilities/lockless.h"
 #include <unordered_map>
 
 namespace vk
@@ -255,12 +253,12 @@ namespace vk
 		g_num_total_frames++;
 	}
 
-	const u64 get_current_frame_id()
+	u64 get_current_frame_id()
 	{
 		return g_num_total_frames;
 	}
 
-	const u64 get_last_completed_frame_id()
+	u64 get_last_completed_frame_id()
 	{
 		return (g_num_processed_frames > 0)? g_num_processed_frames - 1: 0;
 	}

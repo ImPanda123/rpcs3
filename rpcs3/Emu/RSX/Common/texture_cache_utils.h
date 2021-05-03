@@ -1,9 +1,11 @@
 #pragma once
 
-#include "../rsx_cache.h"
 #include "texture_cache_types.h"
 #include "texture_cache_predictor.h"
 #include "TextureUtils.h"
+
+#include "Emu/Memory/vm.h"
+#include "util/vm.hpp"
 
 #include <list>
 #include <unordered_set>
@@ -47,8 +49,8 @@ namespace rsx
 
 	public:
 		using value_type = section_storage_type;
-		using array_type = typename std::array<value_type, array_size>;
-		using list_type = typename std::list<array_type>;
+		using array_type = std::array<value_type, array_size>;
+		using list_type = std::list<array_type>;
 		using size_type = u32;
 
 		// Iterator
@@ -104,7 +106,6 @@ namespace rsx
 			inline reference operator++() { next(); return **this; }
 			inline reference operator++(int) { auto &res = **this;  next(); return res; }
 			inline bool operator==(const iterator_tmpl &rhs) const { return idx == rhs.idx; }
-			inline bool operator!=(const iterator_tmpl &rhs) const { return idx != rhs.idx; }
 		};
 
 		using iterator = iterator_tmpl<value_type, ranged_storage_block_list, typename list_type::iterator>;
@@ -133,7 +134,8 @@ namespace rsx
 		// Constructor, Destructor
 		ranged_storage_block_list() :
 			m_data_it(m_data.end()),
-			m_array_idx(UINT32_MAX)
+			m_array_idx(UINT32_MAX),
+			m_capacity(0)
 		{}
 
 		// Iterator
@@ -816,7 +818,6 @@ namespace rsx
 			inline reference operator++() { next(); return *obj; }
 			inline reference operator++(int) { auto *ptr = obj; next(); return *ptr; }
 			inline bool operator==(const range_iterator_tmpl &rhs) const { return obj == rhs.obj && unowned_remaining == rhs.unowned_remaining; }
-			inline bool operator!=(const range_iterator_tmpl &rhs) const { return !operator==(rhs); }
 
 			inline void set_end(u32 new_end)
 			{
@@ -927,7 +928,7 @@ namespace rsx
 		void protect(utils::protection new_prot, bool force = false);
 		void protect(utils::protection prot, const std::pair<u32, u32>& new_confirm);
 		void unprotect();
-		bool sync();
+		bool sync() const;
 
 		void discard();
 		const address_range& get_bounds(section_bounds bounds) const;

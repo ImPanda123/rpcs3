@@ -186,7 +186,7 @@ void ds4_pad_handler::init_config(pad_config* cfg, const std::string& name)
 
 u32 ds4_pad_handler::get_battery_level(const std::string& padId)
 {
-	std::shared_ptr<DS4Device> device = get_hid_device(padId);
+	const std::shared_ptr<DS4Device> device = get_hid_device(padId);
 	if (device == nullptr || device->hidDevice == nullptr)
 	{
 		return 0;
@@ -266,7 +266,7 @@ std::unordered_map<u64, u16> ds4_pad_handler::get_button_values(const std::share
 	keyBuffer[DS4KeyCodes::RSYPos] = Clamp0To255((127.5f - buf[4]) * 2.0f);
 
 	// bleh, dpad in buffer is stored in a different state
-	u8 dpadState = buf[5] & 0xf;
+	const u8 dpadState = buf[5] & 0xf;
 	switch (dpadState)
 	{
 	case 0x08: // none pressed
@@ -366,7 +366,7 @@ pad_preview_values ds4_pad_handler::get_preview_values(const std::unordered_map<
 	};
 }
 
-bool ds4_pad_handler::GetCalibrationData(DS4Device* ds4Dev)
+bool ds4_pad_handler::GetCalibrationData(DS4Device* ds4Dev) const
 {
 	if (!ds4Dev || !ds4Dev->hidDevice)
 	{
@@ -601,7 +601,7 @@ int ds4_pad_handler::send_output_report(DS4Device* device)
 	if (!device || !device->hidDevice)
 		return -2;
 
-	auto config = device->config;
+	const auto config = device->config;
 	if (config == nullptr)
 		return -2; // hid_write and hid_write_control return -1 on error
 
@@ -682,7 +682,7 @@ ds4_pad_handler::DataStatus ds4_pad_handler::get_data(DS4Device* device)
 		return DataStatus::NoNewData;
 	}
 
-	int offset = 0;
+	int offset;
 	// check report and set offset
 	if (device->bt_controller && buf[0] == 0x11 && res == 78)
 	{
@@ -766,20 +766,6 @@ bool ds4_pad_handler::get_is_right_stick(u64 keyCode)
 	default:
 		return false;
 	}
-}
-
-u32 ds4_pad_handler::get_battery_color(u8 battery_level, int brightness)
-{
-	static const std::array<u32, 12> battery_level_clr = {0xff00, 0xff33, 0xff66, 0xff99, 0xffcc, 0xffff, 0xccff, 0x99ff, 0x66ff, 0x33ff, 0x00ff, 0x00ff};
-	u32 combined_color = battery_level_clr[0];
-	// Check if we got a weird value
-	if (battery_level < battery_level_clr.size())
-	{
-		combined_color = battery_level_clr[battery_level];
-	}
-	const u32 red = (combined_color >> 8) * brightness / 100;
-	const u32 green = (combined_color & 0xff) * brightness / 100;
-	return ((red << 8) | green);
 }
 
 PadHandlerBase::connection ds4_pad_handler::update_connection(const std::shared_ptr<PadDevice>& device)
@@ -908,6 +894,7 @@ void ds4_pad_handler::apply_pad_data(const std::shared_ptr<PadDevice>& device, c
 			config->colorG.set(combined_color & 0xff);
 			config->colorB.set(0);
 			ds4_dev->new_output_data = true;
+			ds4_dev->last_battery_level = ds4_dev->battery_level;
 		}
 	}
 

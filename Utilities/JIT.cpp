@@ -8,7 +8,6 @@
 #include "util/vm.hpp"
 #include "util/asm.hpp"
 #include <charconv>
-#include <immintrin.h>
 #include <zlib.h>
 
 #ifdef __linux__
@@ -143,7 +142,7 @@ asmjit::Error jit_runtime::_add(void** dst, asmjit::CodeHolder* code) noexcept
 	return asmjit::kErrorOk;
 }
 
-asmjit::Error jit_runtime::_release(void* ptr) noexcept
+asmjit::Error jit_runtime::_release(void*) noexcept
 {
 	return asmjit::kErrorOk;
 }
@@ -218,6 +217,10 @@ asmjit::Runtime& asmjit::get_global_runtime()
 			utils::memory_commit(m_pos, size, utils::protection::wx);
 		}
 
+		custom_runtime(const custom_runtime&) = delete;
+
+		custom_runtime& operator=(const custom_runtime&) = delete;
+
 		asmjit::Error _add(void** dst, asmjit::CodeHolder* code) noexcept override
 		{
 			usz codeSize = code->getCodeSize();
@@ -249,7 +252,7 @@ asmjit::Runtime& asmjit::get_global_runtime()
 			return asmjit::kErrorOk;
 		}
 
-		asmjit::Error _release(void* ptr) noexcept override
+		asmjit::Error _release(void*) noexcept override
 		{
 			return asmjit::kErrorOk;
 		}
@@ -268,10 +271,7 @@ asmjit::Runtime& asmjit::get_global_runtime()
 #ifdef LLVM_AVAILABLE
 
 #include <unordered_map>
-#include <map>
 #include <unordered_set>
-#include <set>
-#include <array>
 #include <deque>
 
 #ifdef _MSC_VER
@@ -281,6 +281,11 @@ asmjit::Runtime& asmjit::get_global_runtime()
 #pragma GCC diagnostic ignored "-Wall"
 #pragma GCC diagnostic ignored "-Wextra"
 #pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
+#pragma GCC diagnostic ignored "-Wredundant-decls"
+#pragma GCC diagnostic ignored "-Weffc++"
+#pragma GCC diagnostic ignored "-Wmissing-noreturn"
 #endif
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/FormattedStream.h"
@@ -292,12 +297,6 @@ asmjit::Runtime& asmjit::get_global_runtime()
 #pragma warning(pop)
 #else
 #pragma GCC diagnostic pop
-#endif
-
-#ifdef _WIN32
-#include <Windows.h>
-#else
-#include <sys/mman.h>
 #endif
 
 const bool jit_initialize = []() -> bool
@@ -386,6 +385,10 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 
 	MemoryManager1() = default;
 
+	MemoryManager1(const MemoryManager1&) = delete;
+
+	MemoryManager1& operator=(const MemoryManager1&) = delete;
+
 	~MemoryManager1() override
 	{
 		utils::memory_release(ptr, c_max_size * 2);
@@ -439,12 +442,12 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 		return this->ptr + olda;
 	}
 
-	u8* allocateCodeSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name) override
+	u8* allocateCodeSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/) override
 	{
 		return allocate(code_ptr, size, align, utils::protection::wx);
 	}
 
-	u8* allocateDataSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
+	u8* allocateDataSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/, bool /*is_ro*/) override
 	{
 		return allocate(data_ptr, size, align, utils::protection::rw);
 	}
@@ -454,7 +457,7 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 		return false;
 	}
 
-	void registerEHFrames(u8* addr, u64 load_addr, usz size) override
+	void registerEHFrames(u8*, u64, usz) override
 	{
 	}
 
@@ -489,12 +492,12 @@ struct MemoryManager2 : llvm::RTDyldMemoryManager
 		return {addr, llvm::JITSymbolFlags::Exported};
 	}
 
-	u8* allocateCodeSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name) override
+	u8* allocateCodeSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/) override
 	{
 		return jit_runtime::alloc(size, align, true);
 	}
 
-	u8* allocateDataSection(uptr size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
+	u8* allocateDataSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/, bool /*is_ro*/) override
 	{
 		return jit_runtime::alloc(size, align, false);
 	}
@@ -504,7 +507,7 @@ struct MemoryManager2 : llvm::RTDyldMemoryManager
 		return false;
 	}
 
-	void registerEHFrames(u8* addr, u64 load_addr, usz size) override
+	void registerEHFrames(u8*, u64, usz) override
 	{
 	}
 

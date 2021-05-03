@@ -1,13 +1,15 @@
 #include "stdafx.h"
 #include "../Overlays/overlay_shader_compile_notification.h"
 #include "../Overlays/Shaders/shader_loading_dialog_native.h"
-#include "VKGSRender.h"
-#include "VKHelpers.h"
+
+#include "VKAsyncScheduler.h"
+#include "VKCommandStream.h"
 #include "VKCommonDecompiler.h"
 #include "VKCompute.h"
+#include "VKGSRender.h"
+#include "VKHelpers.h"
 #include "VKRenderPass.h"
 #include "VKResourceManager.h"
-#include "VKCommandStream.h"
 
 #include "vkutils/buffer_object.h"
 #include "vkutils/scratch.h"
@@ -501,6 +503,8 @@ VKGSRender::VKGSRender() : GSRender()
 
 	m_shaders_cache = std::make_unique<vk::shader_cache>(*m_prog_buffer, "vulkan", "v1.91");
 
+	g_fxo->init<vk::async_scheduler_thread>();
+
 	open_command_buffer();
 
 	for (u32 i = 0; i < m_swapchain->get_swap_image_count(); ++i)
@@ -553,6 +557,9 @@ VKGSRender::~VKGSRender()
 		//Initialization failed
 		return;
 	}
+
+	// Globals. TODO: Refactor lifetime management
+	g_fxo->get<vk::async_scheduler_thread>().kill();
 
 	//Wait for device to finish up with resources
 	vkDeviceWaitIdle(*m_device);
@@ -1931,6 +1938,9 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 	const bool sync_success = g_fxo->get<rsx::dma_manager>().sync();
 	const VkBool32 force_flush = !sync_success;
 
+	// Flush any asynchronously scheduled jobs
+	g_fxo->get<vk::async_scheduler_thread>().flush(force_flush);
+
 	if (vk::test_status_interrupt(vk::heap_dirty))
 	{
 		if (m_attrib_ring_info.is_dirty() ||
@@ -2156,7 +2166,7 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 		const utils::address_range surface_range = m_depth_surface_info.get_memory_range();
 		if (g_cfg.video.write_depth_buffer)
 		{
-			const u32 gcm_format = (m_depth_surface_info.depth_format != rsx::surface_depth_format::z16) ? CELL_GCM_TEXTURE_DEPTH16 : CELL_GCM_TEXTURE_DEPTH24_D8;
+			const u32 gcm_format = (m_depth_surface_info.depth_format == rsx::surface_depth_format::z16) ? CELL_GCM_TEXTURE_DEPTH16 : CELL_GCM_TEXTURE_DEPTH24_D8;
 			m_texture_cache.lock_memory_region(
 				*m_current_command_buffer, m_rtts.m_bound_depth_stencil.second, surface_range, true,
 				m_depth_surface_info.width, m_depth_surface_info.height, m_framebuffer_layout.actual_zeta_pitch, gcm_format, true);

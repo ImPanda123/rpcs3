@@ -231,7 +231,7 @@ struct RSXFragmentProgram
 	struct data_storage_helper
 	{
 		void* data_ptr = nullptr;
-		std::vector<char> local_storage;
+		std::vector<char> local_storage{};
 
 		data_storage_helper() = default;
 
@@ -243,6 +243,20 @@ struct RSXFragmentProgram
 
 		data_storage_helper(const data_storage_helper& other)
 		{
+			this->operator=(other);
+		}
+
+		data_storage_helper(data_storage_helper&& other)
+			: data_ptr(other.data_ptr)
+			, local_storage(std::move(other.local_storage))
+		{
+			other.data_ptr = nullptr;
+		}
+
+		data_storage_helper& operator=(const data_storage_helper& other)
+		{
+			if (this == &other) return *this;
+
 			if (other.data_ptr == other.local_storage.data())
 			{
 				local_storage = other.local_storage;
@@ -253,6 +267,19 @@ struct RSXFragmentProgram
 				data_ptr = other.data_ptr;
 				local_storage.clear();
 			}
+
+			return *this;
+		}
+
+		data_storage_helper& operator=(data_storage_helper&& other)
+		{
+			if (this == &other) return *this;
+
+			data_ptr = other.data_ptr;
+			local_storage = std::move(other.local_storage);
+			other.data_ptr = nullptr;
+
+			return *this;
 		}
 
 		void deep_copy(u32 max_length)
@@ -265,7 +292,7 @@ struct RSXFragmentProgram
 			}
 		}
 
-	} mutable data;
+	} mutable data{};
 
 	u32 offset = 0;
 	u32 ucode_length = 0;
@@ -278,7 +305,7 @@ struct RSXFragmentProgram
 	u32 texture_dimensions = 0;
 	u32 texcoord_control_mask = 0;
 
-	float texture_scale[16][4];
+	float texture_scale[16][4]{};
 
 	bool valid = false;
 
@@ -300,7 +327,6 @@ struct RSXFragmentProgram
 
 	RSXFragmentProgram()
 	{
-		std::memset(texture_scale, 0, sizeof(float) * 16 * 4);
 	}
 
 	static RSXFragmentProgram clone(const RSXFragmentProgram& prog)

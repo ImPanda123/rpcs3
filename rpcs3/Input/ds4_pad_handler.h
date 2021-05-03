@@ -1,7 +1,6 @@
 #pragma once
 
 #include "hid_pad_handler.h"
-#include "Utilities/CRC.h"
 
 #include <unordered_map>
 
@@ -62,10 +61,8 @@ public:
 	void init_config(pad_config* cfg, const std::string& name) override;
 
 private:
-	u32 get_battery_color(u8 battery_level, int brightness);
-
 	// This function gets us usuable buffer from the rawbuffer of padData
-	bool GetCalibrationData(DS4Device* ds4Device);
+	bool GetCalibrationData(DS4Device* ds4Device) const;
 
 	// Copies data into padData if status is NewData, otherwise buffer is untouched
 	DataStatus get_data(DS4Device* ds4Device) override;

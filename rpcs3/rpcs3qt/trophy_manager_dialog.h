@@ -10,6 +10,9 @@
 #include <QSlider>
 #include <QSplitter>
 
+#include <memory>
+
+class game_list;
 class gui_settings;
 class TROPUSRLoader;
 
@@ -57,7 +60,7 @@ public Q_SLOTS:
 	void HandleRepaintUiRequest();
 
 private Q_SLOTS:
-	QPixmap GetResizedGameIcon(int index);
+	QPixmap GetResizedGameIcon(int index) const;
 	void ResizeGameIcons();
 	void ResizeTrophyIcons();
 	void ApplyFilter();
@@ -82,8 +85,8 @@ private:
 	*/
 	void PopulateTrophyTable();
 
-	void ReadjustGameTable();
-	void ReadjustTrophyTable();
+	void ReadjustGameTable() const;
+	void ReadjustTrophyTable() const;
 
 	void closeEvent(QCloseEvent *event) override;
 	bool eventFilter(QObject *object, QEvent *event) override;
@@ -94,7 +97,7 @@ private:
 	QComboBox* m_game_combo; //! Lets you choose a game
 	QLabel* m_game_progress; //! Shows you the current game's progress
 	QSplitter* m_splitter; //! Contains the game and trophy tables
-	QTableWidget* m_trophy_table; //! UI element to display trophy stuff.
+	game_list* m_trophy_table; //! UI element to display trophy stuff.
 	QTableWidget* m_game_table; //! UI element to display games.
 
 	bool m_show_hidden_trophies = false;

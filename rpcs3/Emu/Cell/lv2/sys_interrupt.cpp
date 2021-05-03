@@ -9,7 +9,7 @@
 
 LOG_CHANNEL(sys_interrupt);
 
-void lv2_int_serv::exec()
+void lv2_int_serv::exec() const
 {
 	thread->cmd_list
 	({
@@ -25,7 +25,7 @@ void lv2_int_serv::exec()
 
 bool ppu_thread_exit(ppu_thread& ppu);
 
-void lv2_int_serv::join()
+void lv2_int_serv::join() const
 {
 	thread->cmd_list
 	({
@@ -100,7 +100,7 @@ error_code _sys_interrupt_thread_establish(ppu_thread& ppu, vm::ptr<u32> ih, u32
 		}
 
 		// If interrupt thread is running, it's already established on another interrupt tag
-		if (!(it->state & cpu_flag::stop))
+		if (cpu_flag::stop - it->state)
 		{
 			error = CELL_EAGAIN;
 			return result;

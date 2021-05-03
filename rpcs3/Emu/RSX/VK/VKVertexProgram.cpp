@@ -12,7 +12,7 @@ std::string VKVertexDecompilerThread::getFloatTypeName(usz elementCount)
 	return glsl::getFloatTypeNameImpl(elementCount);
 }
 
-std::string VKVertexDecompilerThread::getIntTypeName(usz elementCount)
+std::string VKVertexDecompilerThread::getIntTypeName(usz /*elementCount*/)
 {
 	return "ivec4";
 }
@@ -66,14 +66,14 @@ void VKVertexDecompilerThread::insertHeader(std::stringstream &OS)
 	OS << "};\n\n";
 
 	vk::glsl::program_input in;
-	in.location = m_binding_table.vertex_params_bind_slot;;
+	in.location = m_binding_table.vertex_params_bind_slot;
 	in.domain = glsl::glsl_vertex_program;
 	in.name = "VertexContextBuffer";
 	in.type = vk::glsl::input_type_uniform_buffer;
 	inputs.push_back(in);
 }
 
-void VKVertexDecompilerThread::insertInputs(std::stringstream & OS, const std::vector<ParamType>& inputs)
+void VKVertexDecompilerThread::insertInputs(std::stringstream& OS, const std::vector<ParamType>& /*inputs*/)
 {
 	OS << "layout(set=0, binding=5) uniform usamplerBuffer persistent_input_stream;\n";    // Data stream with persistent vertex data (cacheable)
 	OS << "layout(set=0, binding=6) uniform usamplerBuffer volatile_input_stream;\n";      // Data stream with per-draw data (registers and immediate draw data)
@@ -169,7 +169,7 @@ static const vertex_reg_info reg_table[] =
 	{ "tc9", true, "dst_reg6", "", false, "", "", "", true, CELL_GCM_ATTRIB_OUTPUT_MASK_TEX9 }  // In this line, dst_reg6 is correct since dst_reg goes from 0 to 15.
 };
 
-void VKVertexDecompilerThread::insertOutputs(std::stringstream & OS, const std::vector<ParamType> & outputs)
+void VKVertexDecompilerThread::insertOutputs(std::stringstream& OS, const std::vector<ParamType>& /*outputs*/)
 {
 	for (auto &i : reg_table)
 	{

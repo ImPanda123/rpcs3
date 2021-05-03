@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Emu/localized_string.h"
 #include "Emu/System.h"
+#include "Emu/system_utils.hpp"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/ErrorCodes.h"
@@ -16,8 +17,7 @@
 #include "Utilities/StrUtil.h"
 #include "Utilities/span.h"
 #include "util/init_mutex.hpp"
-
-#include <thread>
+#include "util/asm.hpp"
 
 LOG_CHANNEL(cellGame);
 
@@ -167,7 +167,7 @@ struct content_permission final
 
 error_code cellHddGameCheck(ppu_thread& ppu, u32 version, vm::cptr<char> dirName, u32 errDialog, vm::ptr<CellHddGameStatCallback> funcStat, u32 container)
 {
-	cellGame.error("cellHddGameCheck(version=%d, dirName=%s, errDialog=%d, funcStat=*0x%x, container=%d)", version, dirName, errDialog, funcStat, container);
+	cellGame.warning("cellHddGameCheck(version=%d, dirName=%s, errDialog=%d, funcStat=*0x%x, container=%d)", version, dirName, errDialog, funcStat, container);
 
 	if (!dirName || !funcStat || sysutil_check_name_string(dirName.get_ptr(), 1, CELL_GAME_DIRNAME_SIZE) != 0)
 	{
@@ -181,9 +181,9 @@ error_code cellHddGameCheck(ppu_thread& ppu, u32 version, vm::cptr<char> dirName
 
 	const std::string dir = "/dev_hdd0/game/" + game_dir;
 
-	psf::registry sfo = psf::load_object(fs::file(vfs::get(dir + "/PARAM.SFO")));
+	auto [sfo, psf_error] = psf::load(vfs::get(dir + "/PARAM.SFO"));
 
-	const u32 new_data = sfo.empty() && !fs::is_file(vfs::get(dir + "/PARAM.SFO")) ? CELL_GAMEDATA_ISNEWDATA_YES : CELL_GAMEDATA_ISNEWDATA_NO;
+	const u32 new_data = psf_error == psf::error::stream ? CELL_GAMEDATA_ISNEWDATA_YES : CELL_GAMEDATA_ISNEWDATA_NO;
 
 	if (!new_data)
 	{
@@ -585,7 +585,7 @@ error_code cellGameDataCheck(u32 type, vm::cptr<char> dirName, vm::ptr<CellGameC
 		return CELL_GAME_ERROR_BUSY;
 	}
 
-	auto sfo = psf::load_object(fs::file(vfs::get(dir + "/PARAM.SFO")));
+	auto [sfo, psf_error] = psf::load(vfs::get(dir + "/PARAM.SFO"));
 
 	if (psf::get_string(sfo, "CATEGORY") != [&]()
 	{
@@ -598,10 +598,10 @@ error_code cellGameDataCheck(u32 type, vm::cptr<char> dirName, vm::ptr<CellGameC
 		}
 	}())
 	{
-		if (fs::is_file(vfs::get(dir + "/PARAM.SFO")))
+		if (psf_error != psf::error::stream)
 		{
 			init.cancel();
-			return CELL_GAME_ERROR_BROKEN;
+			return {CELL_GAME_ERROR_BROKEN, psf_error};
 		}
 	}
 
@@ -713,9 +713,9 @@ error_code cellGameDataCheckCreate2(ppu_thread& ppu, u32 version, vm::cptr<char>
 	const std::string game_dir = dirName.get_ptr();
 	const std::string dir = "/dev_hdd0/game/"s + game_dir;
 
-	psf::registry sfo = psf::load_object(fs::file(vfs::get(dir + "/PARAM.SFO")));
+	auto [sfo, psf_error] = psf::load(vfs::get(dir + "/PARAM.SFO"));
 
-	const u32 new_data = sfo.empty() && !fs::is_file(vfs::get(dir + "/PARAM.SFO")) ? CELL_GAMEDATA_ISNEWDATA_YES : CELL_GAMEDATA_ISNEWDATA_NO;
+	const u32 new_data = psf_error == psf::error::stream ? CELL_GAMEDATA_ISNEWDATA_YES : CELL_GAMEDATA_ISNEWDATA_NO;
 
 	if (!new_data)
 	{
@@ -960,11 +960,11 @@ error_code cellGameDeleteGameData(vm::cptr<char> dirName)
 			return CELL_GAME_ERROR_NOTSUPPORTED;
 		}
 
-		psf::registry sfo = psf::load_object(fs::file(dir + "/PARAM.SFO"));
+		const auto [sfo, psf_error] = psf::load(dir + "/PARAM.SFO");
 
-		if (psf::get_string(sfo, "CATEGORY") != "GD" && fs::is_file(dir + "/PARAM.SFO"))
+		if (psf::get_string(sfo, "CATEGORY") != "GD" && psf_error != psf::error::stream)
 		{
-			return CELL_GAME_ERROR_NOTSUPPORTED;
+			return {CELL_GAME_ERROR_NOTSUPPORTED, psf_error};
 		}
 
 		if (sfo.empty())
@@ -979,7 +979,7 @@ error_code cellGameDeleteGameData(vm::cptr<char> dirName)
 		}
 
 		// Actually remove game data
-		if (!vfs::host::remove_all(dir, Emu.GetHddDir(), &g_mp_sys_dev_hdd0, true))
+		if (!vfs::host::remove_all(dir, rpcs3::utils::get_hdd0_dir(), &g_mp_sys_dev_hdd0, true))
 		{
 			return {CELL_GAME_ERROR_ACCESS_ERROR, dir};
 		}
@@ -1343,7 +1343,7 @@ error_code cellDiscGameGetBootDiscInfo(vm::ptr<CellDiscGameSystemFileParam> getP
 	}
 
 	// Always sets 0 at first dword
-	reinterpret_cast<nse_t<u32, 1>*>(getParam->titleId)[0] = 0;
+	*utils::bless<nse_t<u32, 1>>(getParam->titleId + 0) = 0;
 
 	// This is also called by non-disc games, see NPUB90029
 	static const std::string dir = "/dev_bdvd/PS3_GAME"s;

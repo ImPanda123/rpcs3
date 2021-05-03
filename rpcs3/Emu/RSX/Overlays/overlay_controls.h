@@ -8,6 +8,7 @@
 #include "overlay_fonts.h"
 
 #include "Emu/localized_string.h"
+#include "Emu/Cell/timers.hpp"
 
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <libgen.h>
+#include <limits.h>
 #endif
 
 #ifdef __APPLE__
@@ -227,6 +229,8 @@ namespace rsx
 
 				color4f color = { 1.f, 1.f, 1.f, 1.f };
 				bool pulse_glow = false;
+				f32 pulse_sinus_offset = 0.0f; // The current pulse offset
+				f32 pulse_speed_modifier = 0.005f;
 
 				areaf clip_rect = {};
 				bool clip_region = false;
@@ -249,6 +253,12 @@ namespace rsx
 				{
 					texture_ref = image_resource_id::font_file;
 					font_ref = ref;
+				}
+
+				// Analog to overlay_element::set_sinus_offset
+				f32 get_sinus_value() const
+				{
+					return (static_cast<f32>(get_system_time() / 1000) * pulse_speed_modifier) - pulse_sinus_offset;
 				}
 			};
 
@@ -326,7 +336,8 @@ namespace rsx
 			enum text_align
 			{
 				left = 0,
-				center
+				center,
+				right
 			};
 
 			u16 x = 0;
@@ -343,6 +354,24 @@ namespace rsx
 			color4f back_color = { 0.f, 0.f, 0.f, 1.f };
 			color4f fore_color = { 1.f, 1.f, 1.f, 1.f };
 			bool pulse_effect_enabled = false;
+			f32 pulse_sinus_offset = 0.0f; // The current pulse offset
+			f32 pulse_speed_modifier = 0.005f;
+
+			// Analog to command_config::get_sinus_value
+			// Apply modifier for sinus pulse. Resets the pulse. For example:
+			//     0 -> reset to 0.5 rising
+			//   0.5 -> reset to 0
+			//     1 -> reset to 0.5 falling
+			//   1.5 -> reset to 1
+			void set_sinus_offset(f32 sinus_modifier)
+			{
+				if (sinus_modifier >= 0)
+				{
+					static const f32 PI = 3.14159265f;
+					const f32 pulse_sinus_x = static_cast<f32>(get_system_time() / 1000) * pulse_speed_modifier;
+					pulse_sinus_offset = fmod(pulse_sinus_x + sinus_modifier * PI, 2.0f * PI);
+				}
+			}
 
 			compiled_resource compiled_resources;
 			bool is_compiled = false;
@@ -440,7 +469,7 @@ namespace rsx
 				is_compiled = false;
 			}
 
-			void set_text(const std::u32string& text)
+			virtual void set_unicode_text(const std::u32string& text)
 			{
 				this->text = text;
 				is_compiled = false;
@@ -448,7 +477,7 @@ namespace rsx
 
 			void set_text(localized_string_id id)
 			{
-				set_text(get_localized_u32string(id));
+				set_unicode_text(get_localized_u32string(id));
 			}
 
 			virtual void set_font(const char* font_name, u16 font_size)
@@ -496,10 +525,10 @@ namespace rsx
 						v.values[1] += y + padding_top + static_cast<f32>(renderer->get_size_px());
 					}
 
-					if (alignment == center)
+					if (alignment != text_align::left)
 					{
 						// Scan for lines and measure them
-						// Reposition them to the center
+						// Reposition them to the center or right depending on the alignment
 						std::vector<std::pair<u32, u32>> lines;
 						u32 line_begin = 0;
 						u32 ctr = 0;
@@ -521,6 +550,7 @@ namespace rsx
 
 						lines.emplace_back(line_begin, ctr);
 						const auto max_region_w = std::max<f32>(text_extents_w, w);
+						const f32 offset_extent = (alignment == text_align::center ? 0.5f : 1.0f);
 
 						for (auto p : lines)
 						{
@@ -535,7 +565,7 @@ namespace rsx
 
 							if (line_length < max_region_w)
 							{
-								f32 offset = (max_region_w - line_length) * 0.5f;
+								const f32 offset = (max_region_w - line_length) * offset_extent;
 								for (auto n = p.first; n < p.second; ++n)
 								{
 									result[n].values[0] += offset;
@@ -560,6 +590,8 @@ namespace rsx
 
 					config.color = back_color;
 					config.pulse_glow = pulse_effect_enabled;
+					config.pulse_sinus_offset = pulse_sinus_offset;
+					config.pulse_speed_modifier = pulse_speed_modifier;
 
 					auto& verts = compiled_resources_temp.draw_commands.front().verts;
 					verts.resize(4);
@@ -893,10 +925,16 @@ namespace rsx
 				external_ref = nullptr;
 			}
 
-			void set_raw_image(image_info *raw_image)
+			void set_raw_image(image_info* raw_image)
 			{
 				image_resource_ref = image_resource_id::raw_image;
 				external_ref = raw_image;
+			}
+
+			void clear_image()
+			{
+				image_resource_ref = image_resource_id::none;
+				external_ref = nullptr;
 			}
 
 			void set_blur_strength(u8 strength)
@@ -1042,7 +1080,7 @@ namespace rsx
 
 			void add_entry(std::unique_ptr<overlay_element>& entry);
 
-			int get_selected_index();
+			int get_selected_index() const;
 
 			std::u32string get_selected_item();
 
@@ -1065,7 +1103,18 @@ namespace rsx
 			u16 caret_position = 0;
 			u16 vertical_scroll_offset = 0;
 
+			bool m_reset_caret_pulse = false;
+			bool password_mode = false;
+
+			std::u32string value;
+			std::u32string placeholder;
+
 			using label::label;
+
+			void set_text(const std::string& text) override;
+			void set_unicode_text(const std::u32string& text) override;
+
+			void set_placeholder(const std::u32string& placeholder_text);
 
 			void move_caret(direction dir);
 			void insert_text(const std::u32string& str);

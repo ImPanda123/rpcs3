@@ -1,22 +1,19 @@
 #pragma once
-#include "Utilities/hash.h"
 #include "Utilities/File.h"
 #include "Utilities/lockless.h"
 #include "Utilities/Thread.h"
-#include "Emu/Memory/vm.h"
-#include "gcm_enums.h"
 #include "Common/ProgramStateCache.h"
 #include "Emu/System.h"
+#include "Emu/cache_utils.hpp"
 #include "Common/texture_cache_checker.h"
 #include "Overlays/Shaders/shader_loading_dialog.h"
 
 #include "rsx_utils.h"
-#include <thread>
 #include <chrono>
 #include <unordered_map>
 
-#include "util/vm.hpp"
 #include "util/sysinfo.hpp"
+#include "util/fnv_hash.hpp"
 
 namespace rsx
 {
@@ -61,10 +58,10 @@ namespace rsx
 
 		backend_storage& m_storage;
 
-		std::string get_message(u32 index, u32 processed, u32 entry_count)
+		static std::string get_message(u32 index, u32 processed, u32 entry_count)
 		{
 			return fmt::format("%s pipeline object %u of %u", index == 0 ? "Loading" : "Compiling", processed, entry_count);
-		};
+		}
 
 		void load_shaders(uint nb_workers, unpacked_type& unpacked, std::string& directory_path, std::vector<fs::dir_entry>& entries, u32 entry_count,
 		    shader_loading_dialog* dlg)
@@ -202,7 +199,7 @@ namespace rsx
 		{
 			if (!g_cfg.video.disable_on_disk_shader_cache)
 			{
-				root_path = Emu.PPUCache() + "shaders_cache";
+				root_path = rpcs3::cache::get_ppu_cache() + "shaders_cache";
 			}
 		}
 
@@ -319,7 +316,7 @@ namespace rsx
 			fs::write_file(pipeline_path, fs::rewrite, &data, sizeof(data));
 		}
 
-		RSXVertexProgram load_vp_raw(u64 program_hash)
+		RSXVertexProgram load_vp_raw(u64 program_hash) const
 		{
 			RSXVertexProgram vp = {};
 

@@ -56,6 +56,9 @@ namespace utils
 #if defined(MADV_DONTDUMP) && defined(MADV_DODUMP)
 	constexpr int c_madv_no_dump = MADV_DONTDUMP;
 	constexpr int c_madv_dump = MADV_DODUMP;
+#elif defined(MADV_NOCORE) && defined(MADV_CORE)
+	constexpr int c_madv_no_dump = MADV_NOCORE;
+	constexpr int c_madv_dump = MADV_CORE;
 #else
 	constexpr int c_madv_no_dump = 0;
 	constexpr int c_madv_dump = 0;
@@ -157,6 +160,10 @@ namespace utils
 		{
 			ensure(::madvise(ptr, orig_size, c_madv_no_dump) != -1);
 		}
+		else
+		{
+			ensure(::madvise(ptr, orig_size, c_madv_free) != -1);
+		}
 
 		return ptr;
 #endif
@@ -169,7 +176,15 @@ namespace utils
 #else
 		const u64 ptr64 = reinterpret_cast<u64>(pointer);
 		ensure(::mprotect(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), +prot) != -1);
-		ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), MADV_WILLNEED | c_madv_dump) != -1);
+
+		if constexpr (c_madv_dump != 0)
+		{
+			ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), c_madv_dump) != -1);
+		}
+		else
+		{
+			ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), MADV_WILLNEED) != -1);
+		}
 #endif
 	}
 
@@ -184,6 +199,10 @@ namespace utils
 		if constexpr (c_madv_no_dump != 0)
 		{
 			ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), c_madv_no_dump) != -1);
+		}
+		else
+		{
+			ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), c_madv_free) != -1);
 		}
 #endif
 	}
@@ -205,7 +224,14 @@ namespace utils
 			}
 		}
 
-		ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), MADV_WILLNEED | c_madv_dump) != -1);
+		if constexpr (c_madv_dump != 0)
+		{
+			ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), c_madv_dump) != -1);
+		}
+		else
+		{
+			ensure(::madvise(reinterpret_cast<void*>(ptr64 & -4096), size + (ptr64 & 4095), MADV_WILLNEED) != -1);
+		}
 #endif
 	}
 
@@ -259,10 +285,9 @@ namespace utils
 	shm::shm(u32 size, u32 flags)
 		: m_size(utils::align(size, 0x10000))
 		, m_flags(flags)
-		, m_ptr(nullptr)
 	{
 #ifdef _WIN32
-		m_handle = ::CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE, 0, m_size, NULL);
+		m_handle = ::CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, m_size, nullptr);
 		ensure(m_handle != INVALID_HANDLE_VALUE);
 #elif __linux__
 		m_file = -1;
@@ -486,6 +511,7 @@ namespace utils
 			return;
 		}
 #else
+		// This method is faster but leaves mapped remnants of the shm (until overwritten)
 		ensure(::mprotect(target, m_size, PROT_NONE) != -1);
 #endif
 	}

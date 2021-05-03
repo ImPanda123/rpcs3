@@ -9,8 +9,6 @@
 #include "Emu/IdManager.h"
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/Cell/PPUThread.h"
-#include "Emu/Cell/RawSPUThread.h"
-#include "Emu/Cell/SPUThread.h"
 
 #ifdef _WIN32
 #include <WinSock2.h>
@@ -29,7 +27,6 @@
 #include <sys/un.h> // sockaddr_un
 #endif
 
-#include <algorithm>
 #include <regex>
 #include <charconv>
 
@@ -66,9 +63,9 @@ void set_nonblocking(int s)
 
 struct gdb_cmd
 {
-	std::string cmd;
-	std::string data;
-	u8 checksum;
+	std::string cmd{};
+	std::string data{};
+	u8 checksum{};
 };
 
 bool check_errno_again()
@@ -205,11 +202,11 @@ void gdb_thread::start_server()
 	GDB.notice("Started listening on Unix socket '%s'.", sname);
 }
 
-int gdb_thread::read(void* buf, int cnt)
+int gdb_thread::read(void* buf, int cnt) const
 {
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
-		int result = recv(client_socket, reinterpret_cast<char*>(buf), cnt, 0);
+		const int result = recv(client_socket, static_cast<char*>(buf), cnt, 0);
 
 		if (result == -1)
 		{
@@ -313,7 +310,7 @@ bool gdb_thread::read_cmd(gdb_cmd& out_cmd)
 	}
 }
 
-void gdb_thread::send(const char* buf, int cnt)
+void gdb_thread::send(const char* buf, int cnt) const
 {
 	GDB.trace("Sending %s (%d bytes).", buf, cnt);
 
@@ -480,7 +477,7 @@ bool gdb_thread::set_reg(ppu_thread* thread, u32 rid, std::string value)
 	}
 }
 
-u32 gdb_thread::get_reg_size(ppu_thread* thread, u32 rid)
+u32 gdb_thread::get_reg_size(ppu_thread*, u32 rid)
 {
 	switch (rid) {
 	case 66:
@@ -523,22 +520,22 @@ void gdb_thread::wait_with_interrupts()
 	}
 }
 
-bool gdb_thread::cmd_extended_mode(gdb_cmd& cmd)
+bool gdb_thread::cmd_extended_mode(gdb_cmd&)
 {
 	return send_cmd_ack("OK");
 }
 
-bool gdb_thread::cmd_reason(gdb_cmd& cmd)
+bool gdb_thread::cmd_reason(gdb_cmd&)
 {
 	return send_reason();
 }
 
-bool gdb_thread::cmd_supported(gdb_cmd& cmd)
+bool gdb_thread::cmd_supported(gdb_cmd&)
 {
 	return send_cmd_ack("PacketSize=1200");
 }
 
-bool gdb_thread::cmd_thread_info(gdb_cmd& cmd)
+bool gdb_thread::cmd_thread_info(gdb_cmd&)
 {
 	std::string result;
 	const auto on_select = [&](u32, cpu_thread& cpu)
@@ -554,10 +551,10 @@ bool gdb_thread::cmd_thread_info(gdb_cmd& cmd)
 	//todo: this may exceed max command length
 	result = "m" + result + "l";
 
-	return send_cmd_ack(result);;
+	return send_cmd_ack(result);
 }
 
-bool gdb_thread::cmd_current_thread(gdb_cmd& cmd)
+bool gdb_thread::cmd_current_thread(gdb_cmd&)
 {
 	return send_cmd_ack(selected_thread.expired() ? "" : ("QC" + u64_to_padded_hex(selected_thread.lock()->id)));
 }
@@ -657,7 +654,7 @@ bool gdb_thread::cmd_write_memory(gdb_cmd& cmd)
 	return send_cmd_ack("OK");
 }
 
-bool gdb_thread::cmd_read_all_registers(gdb_cmd& cmd)
+bool gdb_thread::cmd_read_all_registers(gdb_cmd&)
 {
 	std::string result;
 	select_thread(general_ops_thread_id);
@@ -711,19 +708,19 @@ bool gdb_thread::cmd_set_thread_ops(gdb_cmd& cmd)
 	return send_cmd_ack("E01");
 }
 
-bool gdb_thread::cmd_attached_to_what(gdb_cmd& cmd)
+bool gdb_thread::cmd_attached_to_what(gdb_cmd&)
 {
 	//creating processes from client is not available yet
 	return send_cmd_ack("1");
 }
 
-bool gdb_thread::cmd_kill(gdb_cmd& cmd)
+bool gdb_thread::cmd_kill(gdb_cmd&)
 {
 	Emu.Stop();
 	return true;
 }
 
-bool gdb_thread::cmd_continue_support(gdb_cmd& cmd)
+bool gdb_thread::cmd_continue_support(gdb_cmd&)
 {
 	return send_cmd_ack("vCont;c;s;C;S");
 }
@@ -741,7 +738,7 @@ bool gdb_thread::cmd_vcont(gdb_cmd& cmd)
 		}
 		ppu->state -= cpu_flag::dbg_pause;
 		//special case if app didn't start yet (only loaded)
-		if (!Emu.IsPaused() && !Emu.IsRunning()) {
+		if (Emu.IsReady()) {
 			Emu.Run(true);
 		}
 		if (Emu.IsPaused()) {
@@ -892,7 +889,8 @@ void gdb_thread::operator()()
 				PROCESS_CMD("Z", cmd_set_breakpoint);
 
 				GDB.trace("Unsupported command received: '%s'.", cmd.cmd);
-				if (!send_cmd_ack("")) {
+				if (!send_cmd_ack(""))
+				{
 					break;
 				}
 			}

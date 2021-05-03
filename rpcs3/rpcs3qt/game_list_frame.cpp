@@ -16,6 +16,7 @@
 
 #include "Emu/Memory/vm.h"
 #include "Emu/System.h"
+#include "Emu/system_utils.hpp"
 #include "Loader/PSF.h"
 #include "util/types.hpp"
 #include "Utilities/lockless.h"
@@ -24,7 +25,6 @@
 #include "Input/pad_thread.h"
 
 #include <algorithm>
-#include <iterator>
 #include <memory>
 #include <set>
 #include <regex>
@@ -37,9 +37,9 @@
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QInputDialog>
-#include <QToolTip>
 #include <QApplication>
 #include <QClipboard>
+#include <QFileDialog>
 
 LOG_CHANNEL(game_list_log, "GameList");
 LOG_CHANNEL(sys_log, "SYS");
@@ -48,9 +48,9 @@ inline std::string sstr(const QString& _in) { return _in.toStdString(); }
 
 game_list_frame::game_list_frame(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, std::shared_ptr<persistent_settings> persistent_settings, QWidget* parent)
 	: custom_dock_widget(tr("Game List"), parent)
-	, m_gui_settings(gui_settings)
-	, m_emu_settings(emu_settings)
-	, m_persistent_settings(persistent_settings)
+	, m_gui_settings(std::move(gui_settings))
+	, m_emu_settings(std::move(emu_settings))
+	, m_persistent_settings(std::move(persistent_settings))
 {
 	m_icon_size       = gui::gl_icon_size_min; // ensure a valid size
 	m_is_list_layout  = m_gui_settings->GetValue(gui::gl_listMode).toBool();
@@ -97,6 +97,7 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> gui_settings, std
 	m_game_list->setAlternatingRowColors(true);
 	m_game_list->installEventFilter(this);
 	m_game_list->setColumnCount(gui::column_count);
+	m_game_list->setMouseTracking(true);
 
 	m_game_compat = new game_compatibility(m_gui_settings, this);
 
@@ -209,6 +210,8 @@ void game_list_frame::LoadSettings()
 	m_sort_column = m_gui_settings->GetValue(gui::gl_sortCol).toInt();
 	m_category_filters = m_gui_settings->GetGameListCategoryFilters();
 	m_draw_compat_status_to_grid = m_gui_settings->GetValue(gui::gl_draw_compat).toBool();
+	m_show_custom_icons = m_gui_settings->GetValue(gui::gl_custom_icon).toBool();
+	m_play_hover_movies = m_gui_settings->GetValue(gui::gl_hover_gifs).toBool();
 
 	Refresh(true);
 
@@ -237,7 +240,7 @@ game_list_frame::~game_list_frame()
 	SaveSettings();
 }
 
-void game_list_frame::FixNarrowColumns()
+void game_list_frame::FixNarrowColumns() const
 {
 	qApp->processEvents();
 
@@ -256,7 +259,7 @@ void game_list_frame::FixNarrowColumns()
 	}
 }
 
-void game_list_frame::ResizeColumnsToContents(int spacing)
+void game_list_frame::ResizeColumnsToContents(int spacing) const
 {
 	if (!m_game_list)
 	{
@@ -314,11 +317,11 @@ bool game_list_frame::IsEntryVisible(const game_info& game)
 	};
 
 	const QString serial = qstr(game->info.serial);
-	bool is_visible = m_show_hidden || !m_hidden_list.contains(serial);
+	const bool is_visible = m_show_hidden || !m_hidden_list.contains(serial);
 	return is_visible && matches_category() && SearchMatchesApp(qstr(game->info.name), serial);
 }
 
-void game_list_frame::SortGameList()
+void game_list_frame::SortGameList() const
 {
 	// Back-up old header sizes to handle unwanted column resize in case of zero search results
 	QList<int> column_widths;
@@ -385,14 +388,14 @@ void game_list_frame::SortGameList()
 	m_game_list->resizeColumnToContents(gui::column_count - 1);
 }
 
-QString game_list_frame::GetLastPlayedBySerial(const QString& serial)
+QString game_list_frame::GetLastPlayedBySerial(const QString& serial) const
 {
 	return m_persistent_settings->GetLastPlayed(serial);
 }
 
 std::string game_list_frame::GetCacheDirBySerial(const std::string& serial)
 {
-	return Emu.GetCacheDir() + serial;
+	return rpcs3::utils::get_cache_dir() + serial;
 }
 
 std::string game_list_frame::GetDataDirBySerial(const std::string& serial)
@@ -411,8 +414,8 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 		m_game_data.clear();
 		m_notes.clear();
 
-		const std::string _hdd = Emulator::GetHddDir();
-		const std::string cat_unknown = sstr(category::cat_unknown);
+		const std::string _hdd = rpcs3::utils::get_hdd0_dir();
+		const std::string cat_unknown = sstr(cat::cat_unknown);
 		const std::string cat_unknown_localized = sstr(localized.category.unknown);
 
 		std::vector<std::string> path_list;
@@ -474,9 +477,7 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 
 		auto get_games = []() -> YAML::Node
 		{
-			fs::file games(fs::get_config_dir() + "/games.yml", fs::read + fs::create);
-
-			if (games)
+			if (const fs::file games = fs::file(fs::get_config_dir() + "/games.yml", fs::read + fs::create))
 			{
 				auto [result, error] = yaml_load(games.to_string());
 
@@ -488,12 +489,8 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 
 				return result;
 			}
-			else
-			{
-				game_list_log.error("Failed to load games.yml, check permissions.");
-				return {};
-			}
 
+			game_list_log.error("Failed to load games.yml, check permissions.");
 			return {};
 		};
 
@@ -537,28 +534,30 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 		path_list.erase(unique(path_list.begin(), path_list.end()), path_list.end());
 
 		QSet<QString> serials;
-
 		QMutex mutex_cat;
-
 		lf_queue<game_info> games;
+		const std::string game_icon_path = m_play_hover_movies ? fs::get_config_dir() + "/Icons/game_icons/" : "";
 
 		QtConcurrent::blockingMap(path_list, [&](const std::string& dir)
 		{
 			const Localized thread_localized;
 
 			{
-				const std::string sfo_dir = Emulator::GetSfoDirFromGamePath(dir, Emu.GetUsr());
-				const fs::file sfo_file(sfo_dir + "/PARAM.SFO");
-				if (!sfo_file)
+				const std::string sfo_dir = rpcs3::utils::get_sfo_dir_from_game_path(dir);
+
+				const psf::registry psf = psf::load_object(fs::file(sfo_dir + "/PARAM.SFO"));
+
+				const std::string_view title_id = psf::get_string(psf, "TITLE_ID", "");
+
+				if (title_id.empty())
 				{
+					// Do not care about invalid entries
 					return;
 				}
 
-				const auto psf = psf::load_object(sfo_file);
-
 				GameInfo game;
 				game.path         = dir;
-				game.serial       = std::string(psf::get_string(psf, "TITLE_ID", ""));
+				game.serial       = std::string(title_id);
 				game.name         = std::string(psf::get_string(psf, "TITLE", cat_unknown_localized));
 				game.app_ver      = std::string(psf::get_string(psf, "APP_VER", cat_unknown_localized));
 				game.version      = std::string(psf::get_string(psf, "VERSION", cat_unknown_localized));
@@ -569,9 +568,13 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 				game.sound_format = psf::get_integer(psf, "SOUND_FORMAT", 0);
 				game.bootable     = psf::get_integer(psf, "BOOTABLE", 0);
 				game.attr         = psf::get_integer(psf, "ATTRIBUTE", 0);
-				game.icon_path    = fs::get_config_dir() + "/Icons/game_icons/" + game.serial + "/ICON0.PNG";
 
-				if (!fs::is_file(game.icon_path))
+				if (m_show_custom_icons)
+				{
+					game.icon_path = fs::get_config_dir() + "/Icons/game_icons/" + game.serial + "/ICON0.PNG";
+				}
+
+				if (!m_show_custom_icons || !fs::is_file(game.icon_path))
 				{
 					game.icon_path = sfo_dir + "/ICON0.PNG";
 				}
@@ -581,8 +584,8 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 				const QString serial = qstr(game.serial);
 
 				// Read persistent_settings values
-				QString note        = m_persistent_settings->GetValue(gui::persistent::notes, serial, "").toString();
-				QString title       = m_persistent_settings->GetValue(gui::persistent::titles, serial, "").toString().simplified();
+				const QString note  = m_persistent_settings->GetValue(gui::persistent::notes, serial, "").toString();
+				const QString title = m_persistent_settings->GetValue(gui::persistent::titles, serial, "").toString().simplified();
 				QString last_played = m_persistent_settings->GetValue(gui::persistent::last_played, serial, "").toString();
 				quint64 playtime    = m_persistent_settings->GetValue(gui::persistent::playtime, serial, 0).toULongLong();
 
@@ -591,31 +594,12 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 				if (last_played.isEmpty())
 				{
 					last_played = m_gui_settings->GetValue(gui::persistent::last_played, serial, "").toString();
+					m_gui_settings->RemoveValue(gui::persistent::last_played, serial);
 				}
 				if (playtime <= 0)
 				{
 					playtime = m_gui_settings->GetValue(gui::persistent::playtime, serial, 0).toULongLong();
-				}
-				// Deprecated values older than August 2nd 2020
-				if (note.isEmpty())
-				{
-					note = m_gui_settings->GetValue(gui::persistent::notes, serial, "").toString();
-
-					// Move to persistent settings
-					if (!note.isEmpty())
-					{
-						m_persistent_settings->SetValue(gui::persistent::notes, serial, note);
-					}
-				}
-				if (title.isEmpty())
-				{
-					title = m_gui_settings->GetValue(gui::persistent::titles, serial, "").toString().simplified();
-
-					// Move to persistent settings
-					if (!title.isEmpty())
-					{
-						m_persistent_settings->SetValue(gui::persistent::titles, serial, title);
-					}
+					m_gui_settings->RemoveValue(gui::persistent::playtime, serial);
 				}
 
 				// Set persistent_settings values if values exist
@@ -671,19 +655,20 @@ void game_list_frame::Refresh(const bool from_drive, const bool scroll_after)
 
 				const auto compat = m_game_compat->GetCompatibility(game.serial);
 
-				const bool hasCustomConfig = fs::is_file(Emulator::GetCustomConfigPath(game.serial)) || fs::is_file(Emulator::GetCustomConfigPath(game.serial, true));
-				const bool hasCustomPadConfig = fs::is_file(Emulator::GetCustomInputConfigPath(game.serial));
+				const bool hasCustomConfig = fs::is_file(rpcs3::utils::get_custom_config_path(game.serial)) || fs::is_file(rpcs3::utils::get_custom_config_path(game.serial, true));
+				const bool hasCustomPadConfig = fs::is_file(rpcs3::utils::get_custom_input_config_path(game.serial));
+				const bool has_hover_gif =  fs::is_file(game_icon_path + game.serial + "/hover.gif");
 
 				const QColor color = getGridCompatibilityColor(compat.color);
 				const QPixmap pxmap = PaintedPixmap(icon, hasCustomConfig, hasCustomPadConfig, color);
 
-				games.push(std::make_shared<gui_game_info>(gui_game_info{game, qt_cat, compat, icon, pxmap, hasCustomConfig, hasCustomPadConfig}));
+				games.push(std::make_shared<gui_game_info>(gui_game_info{game, qt_cat, compat, icon, pxmap, hasCustomConfig, hasCustomPadConfig, has_hover_gif}));
 			}
 		});
 
 		for (auto&& g : games.pop_all())
 		{
-			m_game_data.push_back(std::move(g));
+			m_game_data.push_back(g);
 		}
 
 		// Try to update the app version for disc games if there is a patch
@@ -806,7 +791,6 @@ void game_list_frame::SaveSettings()
 	}
 	m_gui_settings->SetValue(gui::gl_sortCol, m_sort_column);
 	m_gui_settings->SetValue(gui::gl_sortAsc, m_col_sort_order == Qt::AscendingOrder);
-
 	m_gui_settings->SetValue(gui::gl_state, m_game_list->horizontalHeader()->saveState());
 }
 
@@ -919,7 +903,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	QAction* pad_configure = menu.addAction(gameinfo->hasCustomPadConfig
 		? tr("&Change Custom Gamepad Configuration")
 		: tr("&Create Custom Gamepad Configuration"));
-	QAction* configure_patches = menu.addAction(tr("&Configure Game Patches"));
+	QAction* configure_patches = menu.addAction(tr("&Manage Game Patches"));
 	QAction* create_ppu_cache = menu.addAction(tr("&Create PPU Cache"));
 	menu.addSeparator();
 	QAction* rename_title = menu.addAction(tr("&Rename In Game List"));
@@ -987,12 +971,12 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		QAction* open_config_dir = menu.addAction(tr("&Open Custom Config Folder"));
 		connect(open_config_dir, &QAction::triggered, [current_game]()
 		{
-			const std::string new_config_path = Emulator::GetCustomConfigPath(current_game.serial);
+			const std::string new_config_path = rpcs3::utils::get_custom_config_path(current_game.serial);
 
 			if (fs::is_file(new_config_path))
 				gui::utils::open_dir(new_config_path);
 
-			const std::string old_config_path = Emulator::GetCustomConfigPath(current_game.serial, true);
+			const std::string old_config_path = rpcs3::utils::get_custom_config_path(current_game.serial, true);
 
 			if (fs::is_file(old_config_path))
 				gui::utils::open_dir(old_config_path);
@@ -1011,17 +995,164 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	QAction* download_compat = menu.addAction(tr("&Download Compatibility Database"));
 	menu.addSeparator();
 	QAction* edit_notes = menu.addAction(tr("&Edit Tooltip Notes"));
+
+	QMenu* icon_menu = menu.addMenu(tr("&Custom Images"));
+	const std::array<QAction*, 3> custom_icon_actions =
+	{
+		icon_menu->addAction(tr("&Import Custom Icon")),
+		icon_menu->addAction(tr("&Replace Custom Icon")),
+		icon_menu->addAction(tr("&Remove Custom Icon"))
+	};
+	icon_menu->addSeparator();
+	const std::array<QAction*, 3> custom_gif_actions =
+	{
+		icon_menu->addAction(tr("&Import Hover Gif")),
+		icon_menu->addAction(tr("&Replace Hover Gif")),
+		icon_menu->addAction(tr("&Remove Hover Gif"))
+	};
+	icon_menu->addSeparator();
+	const std::array<QAction*, 3> custom_shader_icon_actions =
+	{
+		icon_menu->addAction(tr("&Import Custom Shader Loading Background")),
+		icon_menu->addAction(tr("&Replace Custom Shader Loading Background")),
+		icon_menu->addAction(tr("&Remove Custom Shader Loading Background"))
+	};
+
+	if (const std::string custom_icon_dir_path = fs::get_config_dir() + "/Icons/game_icons/" + current_game.serial;
+		fs::create_path(custom_icon_dir_path))
+	{
+		enum class icon_action
+		{
+			add,
+			replace,
+			remove
+		};
+		enum class icon_type
+		{
+			game_list,
+			hover_gif,
+			shader_load
+		};
+		
+		const auto handle_icon = [this, serial](const QString& game_icon_path, const QString& suffix, icon_action action, icon_type type)
+		{
+			QString icon_path;
+
+			if (action != icon_action::remove)
+			{
+				QString msg;
+				switch (type)
+				{
+				case icon_type::game_list:
+					msg = tr("Select Custom Icon");
+					break;
+				case icon_type::hover_gif:
+					msg = tr("Select Custom Hover Gif");
+					break;
+				case icon_type::shader_load:
+					msg = tr("Select Custom Shader Loading Background");
+					break;
+				}
+				icon_path = QFileDialog::getOpenFileName(this, msg, "", tr("%0 (*.%0);;All files (*.*)").arg(suffix));
+			}
+			if (action == icon_action::remove || !icon_path.isEmpty())
+			{
+				bool refresh = false;
+
+				QString msg;
+				switch (type)
+				{
+				case icon_type::game_list:
+					msg = tr("Remove Custom Icon of %0?").arg(serial);
+					break;
+				case icon_type::hover_gif:
+					msg = tr("Remove Custom Hover Gif of %0?").arg(serial);
+					break;
+				case icon_type::shader_load:
+					msg = tr("Remove Custom Shader Loading Background of %0?").arg(serial);
+					break;
+				}
+
+				if (action == icon_action::replace || (action == icon_action::remove &&
+					QMessageBox::question(this, tr("Confirm Removal"), msg) == QMessageBox::Yes))
+				{
+					if (QFile file(game_icon_path); file.exists() && !file.remove())
+					{
+						game_list_log.error("Could not remove old file: '%s'", sstr(game_icon_path), sstr(file.errorString()));
+						QMessageBox::warning(this, tr("Warning!"), tr("Failed to remove the old file!"));
+						return;
+					}
+
+					game_list_log.success("Removed file: '%s'", sstr(game_icon_path));
+					if (action == icon_action::remove)
+					{
+						refresh = true;
+					}
+				}
+
+				if (action != icon_action::remove)
+				{
+					if (!QFile::copy(icon_path, game_icon_path))
+					{
+						game_list_log.error("Could not import file '%s' to '%s'.", sstr(icon_path), sstr(game_icon_path));
+						QMessageBox::warning(this, tr("Warning!"), tr("Failed to import the new file!"));
+					}
+					else
+					{
+						game_list_log.success("Imported file '%s' to '%s'", sstr(icon_path), sstr(game_icon_path));
+						refresh = true;
+					}
+				}
+
+				if (refresh)
+				{
+					Refresh(true);
+				}
+			}
+		};
+
+		const std::vector<std::tuple<icon_type, QString, QString, const std::array<QAction*, 3>&>> icon_map =
+		{
+			{icon_type::game_list, "/ICON0.PNG", "png", custom_icon_actions},
+			{icon_type::hover_gif, "/hover.gif", "gif", custom_gif_actions},
+			{icon_type::shader_load, "/PIC1.PNG", "png", custom_shader_icon_actions},
+		};
+
+		for (const auto& [type, icon_name, suffix, actions] : icon_map)
+		{
+			const QString icon_path = qstr(custom_icon_dir_path) + icon_name;
+
+			if (QFile::exists(icon_path))
+			{
+				actions[static_cast<int>(icon_action::add)]->setVisible(false);
+				connect(actions[static_cast<int>(icon_action::replace)], &QAction::triggered, this, [handle_icon, icon_path, t = type, s = suffix] { handle_icon(icon_path, s, icon_action::replace, t); });
+				connect(actions[static_cast<int>(icon_action::remove)], &QAction::triggered, this, [handle_icon, icon_path, t = type, s = suffix] { handle_icon(icon_path, s, icon_action::remove, t); });
+			}
+			else
+			{
+				connect(actions[static_cast<int>(icon_action::add)], &QAction::triggered, this, [handle_icon, icon_path, t = type, s = suffix] { handle_icon(icon_path, s, icon_action::add, t); });
+				actions[static_cast<int>(icon_action::replace)]->setVisible(false);
+				actions[static_cast<int>(icon_action::remove)]->setEnabled(false);
+			}
+		}
+	}
+	else
+	{
+		game_list_log.error("Could not create path '%s'", custom_icon_dir_path);
+		icon_menu->setEnabled(false);
+	}
+
 	QMenu* info_menu = menu.addMenu(tr("&Copy Info"));
 	QAction* copy_info = info_menu->addAction(tr("&Copy Name + Serial"));
 	QAction* copy_name = info_menu->addAction(tr("&Copy Name"));
 	QAction* copy_serial = info_menu->addAction(tr("&Copy Serial"));
 
-	connect(boot, &QAction::triggered, [this, gameinfo]()
+	connect(boot, &QAction::triggered, this, [this, gameinfo]()
 	{
 		sys_log.notice("Booting from gamelist per context menu...");
 		Q_EMIT RequestBoot(gameinfo, gameinfo->hasCustomConfig);
 	});
-	connect(configure, &QAction::triggered, [this, current_game, gameinfo]()
+	connect(configure, &QAction::triggered, this, [this, current_game, gameinfo]()
 	{
 		settings_dialog dlg(m_gui_settings, m_emu_settings, 0, this, &current_game);
 		connect(&dlg, &settings_dialog::EmuSettingsApplied, [this, gameinfo]()
@@ -1035,7 +1166,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		});
 		dlg.exec();
 	});
-	connect(pad_configure, &QAction::triggered, [this, current_game, gameinfo]()
+	connect(pad_configure, &QAction::triggered, this, [this, current_game, gameinfo]()
 	{
 		pad_settings_dialog dlg(m_gui_settings, this, &current_game);
 
@@ -1045,7 +1176,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			ShowCustomConfigIcon(gameinfo);
 		}
 	});
-	connect(hide_serial, &QAction::triggered, [serial, this](bool checked)
+	connect(hide_serial, &QAction::triggered, this, [serial, this](bool checked)
 	{
 		if (checked)
 			m_hidden_list.insert(serial);
@@ -1055,14 +1186,14 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		m_gui_settings->SetValue(gui::gl_hidden_list, QStringList(m_hidden_list.values()));
 		Refresh();
 	});
-	connect(create_ppu_cache, &QAction::triggered, [gameinfo, this]
+	connect(create_ppu_cache, &QAction::triggered, this, [gameinfo, this]
 	{
 		if (m_gui_settings->GetBootConfirmation(this))
 		{
 			CreatePPUCache(gameinfo);
 		}
 	});
-	connect(remove_game, &QAction::triggered, [this, current_game, gameinfo, cache_base_dir, name]
+	connect(remove_game, &QAction::triggered, this, [this, current_game, gameinfo, cache_base_dir, name]
 	{
 		if (current_game.path.empty())
 		{
@@ -1099,7 +1230,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			}
 		}
 	});
-	connect(configure_patches, &QAction::triggered, [this, current_game, gameinfo]()
+	connect(configure_patches, &QAction::triggered, this, [this, gameinfo]()
 	{
 		std::unordered_map<std::string, std::set<std::string>> games;
 		for (const auto& game : m_game_data)
@@ -1109,23 +1240,23 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 				games[game->info.serial].insert(game_list_frame::GetGameVersion(game));
 			}
 		}
-		patch_manager_dialog patch_manager(m_gui_settings, games, current_game.serial, this);
+		patch_manager_dialog patch_manager(m_gui_settings, games, gameinfo->info.serial, GetGameVersion(gameinfo), this);
 		patch_manager.exec();
 	});
-	connect(open_game_folder, &QAction::triggered, [current_game]()
+	connect(open_game_folder, &QAction::triggered, this, [current_game]()
 	{
 		gui::utils::open_dir(current_game.path);
 	});
-	connect(check_compat, &QAction::triggered, [serial]
+	connect(check_compat, &QAction::triggered, this, [serial]
 	{
 		const QString link = "https://rpcs3.net/compatibility?g=" + serial;
 		QDesktopServices::openUrl(QUrl(link));
 	});
-	connect(download_compat, &QAction::triggered, [this]
+	connect(download_compat, &QAction::triggered, this, [this]
 	{
 		m_game_compat->RequestCompatibility(true);
 	});
-	connect(rename_title, &QAction::triggered, [this, name, serial, global_pos]
+	connect(rename_title, &QAction::triggered, this, [this, name, serial, global_pos]
 	{
 		const QString custom_title = m_persistent_settings->GetValue(gui::persistent::titles, serial, "").toString();
 		const QString old_title = custom_title.isEmpty() ? name : custom_title;
@@ -1150,7 +1281,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			Refresh(true); // full refresh in order to reliably sort the list
 		}
 	});
-	connect(edit_notes, &QAction::triggered, [this, name, serial]
+	connect(edit_notes, &QAction::triggered, this, [this, name, serial]
 	{
 		bool accepted;
 		const QString old_notes = m_persistent_settings->GetValue(gui::persistent::notes, serial, "").toString();
@@ -1171,15 +1302,15 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			Refresh();
 		}
 	});
-	connect(copy_info, &QAction::triggered, [name, serial]
+	connect(copy_info, &QAction::triggered, this, [name, serial]
 	{
 		QApplication::clipboard()->setText(name % QStringLiteral(" [") % serial % QStringLiteral("]"));
 	});
-	connect(copy_name, &QAction::triggered, [name]
+	connect(copy_name, &QAction::triggered, this, [name]
 	{
 		QApplication::clipboard()->setText(name);
 	});
-	connect(copy_serial, &QAction::triggered, [serial]
+	connect(copy_serial, &QAction::triggered, this, [serial]
 	{
 		QApplication::clipboard()->setText(serial);
 	});
@@ -1187,11 +1318,11 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 	// Disable options depending on software category
 	const QString category = qstr(current_game.category);
 
-	if (category == cat_disc_game)
+	if (category == cat::cat_disc_game)
 	{
 		remove_game->setEnabled(false);
 	}
-	else if (category != cat_hdd_game)
+	else if (category != cat::cat_hdd_game)
 	{
 		check_compat->setEnabled(false);
 	}
@@ -1214,10 +1345,10 @@ bool game_list_frame::CreatePPUCache(const game_info& game)
 	return true;
 }
 
-bool game_list_frame::RemoveCustomConfiguration(const std::string& title_id, game_info game, bool is_interactive)
+bool game_list_frame::RemoveCustomConfiguration(const std::string& title_id, const game_info& game, bool is_interactive)
 {
-	const std::string config_path_new = Emulator::GetCustomConfigPath(title_id);
-	const std::string config_path_old = Emulator::GetCustomConfigPath(title_id, true);
+	const std::string config_path_new = rpcs3::utils::get_custom_config_path(title_id);
+	const std::string config_path_old = rpcs3::utils::get_custom_config_path(title_id, true);
 
 	if (!fs::is_file(config_path_new) && !fs::is_file(config_path_old))
 		return true;
@@ -1256,9 +1387,9 @@ bool game_list_frame::RemoveCustomConfiguration(const std::string& title_id, gam
 	return result;
 }
 
-bool game_list_frame::RemoveCustomPadConfiguration(const std::string& title_id, game_info game, bool is_interactive)
+bool game_list_frame::RemoveCustomPadConfiguration(const std::string& title_id, const game_info& game, bool is_interactive)
 {
-	const std::string config_dir = Emulator::GetCustomInputConfigDir(title_id);
+	const std::string config_dir = rpcs3::utils::get_custom_input_config_dir(title_id);
 
 	if (!fs::is_dir(config_dir))
 		return true;
@@ -1283,7 +1414,8 @@ bool game_list_frame::RemoveCustomPadConfiguration(const std::string& title_id, 
 		game_list_log.notice("Removed pad configuration directory: %s", config_dir);
 		return true;
 	}
-	else if (is_interactive)
+
+	if (is_interactive)
 	{
 		QMessageBox::warning(this, tr("Warning!"), tr("Failed to completely remove pad configuration directory!"));
 		game_list_log.fatal("Failed to completely remove pad configuration directory: %s\nError: %s", config_dir, fs::g_tls_error);
@@ -1675,27 +1807,63 @@ void game_list_frame::BatchRemoveShaderCaches()
 	QApplication::beep();
 }
 
-QPixmap game_list_frame::PaintedPixmap(const QPixmap& icon, bool paint_config_icon, bool paint_pad_config_icon, const QColor& compatibility_color)
+QPixmap game_list_frame::PaintedPixmap(const QPixmap& icon, bool paint_config_icon, bool paint_pad_config_icon, const QColor& compatibility_color) const
 {
 	const qreal device_pixel_ratio = devicePixelRatioF();
-	const QSize original_size = icon.size();
-
-	QPixmap canvas = QPixmap(original_size * device_pixel_ratio);
-	canvas.setDevicePixelRatio(device_pixel_ratio);
-	canvas.fill(m_icon_color);
-
-	QPainter painter(&canvas);
-	painter.setRenderHint(QPainter::SmoothPixmapTransform);
+	QSize canvas_size(320, 176);
+	QSize icon_size(icon.size());
+	QPoint target_pos;
 
 	if (!icon.isNull())
 	{
-		painter.drawPixmap(QPoint(0, 0), icon);
+		// Let's upscale the original icon to at least fit into the outer rect of the size of PS3's ICON0.PNG
+		if (icon_size.width() < 320 || icon_size.height() < 176)
+		{
+			icon_size.scale(320, 176, Qt::KeepAspectRatio);
+		}
+
+		canvas_size = icon_size;
+
+		// Calculate the centered size and position of the icon on our canvas.
+		if (icon_size.width() != 320 || icon_size.height() != 176)
+		{
+			ensure(icon_size.height() > 0);
+			constexpr double target_ratio = 320.0 / 176.0; // aspect ratio 20:11
+
+			if ((icon_size.width() / static_cast<double>(icon_size.height())) > target_ratio)
+			{
+				canvas_size.setHeight(std::ceil(icon_size.width() / target_ratio));
+			}
+			else
+			{
+				canvas_size.setWidth(std::ceil(icon_size.height() * target_ratio));
+			}
+
+			target_pos.setX(std::max<int>(0, (canvas_size.width() - icon_size.width()) / 2.0));
+			target_pos.setY(std::max<int>(0, (canvas_size.height() - icon_size.height()) / 2.0));
+		}
 	}
 
+	// Create a canvas large enough to fit our entire scaled icon
+	QPixmap canvas(canvas_size * device_pixel_ratio);
+	canvas.setDevicePixelRatio(device_pixel_ratio);
+	canvas.fill(m_icon_color);
+
+	// Create a painter for our canvas
+	QPainter painter(&canvas);
+	painter.setRenderHint(QPainter::SmoothPixmapTransform);
+
+	// Draw the icon onto our canvas
+	if (!icon.isNull())
+	{
+		painter.drawPixmap(target_pos.x(), target_pos.y(), icon_size.width(), icon_size.height(), icon);
+	}
+
+	// Draw config icons if necessary
 	if (!m_is_list_layout && (paint_config_icon || paint_pad_config_icon))
 	{
-		const int width = original_size.width() * 0.2;
-		const QPoint origin = QPoint(original_size.width() - width, 0);
+		const int width = canvas_size.width() * 0.2;
+		const QPoint origin = QPoint(canvas_size.width() - width, 0);
 		QString icon_path;
 
 		if (paint_config_icon && paint_pad_config_icon)
@@ -1716,23 +1884,27 @@ QPixmap game_list_frame::PaintedPixmap(const QPixmap& icon, bool paint_config_ic
 		painter.drawPixmap(origin, custom_config_icon.scaled(QSize(width, width) * device_pixel_ratio, Qt::KeepAspectRatio, Qt::TransformationMode::SmoothTransformation));
 	}
 
+	// Draw game compatibility icons if necessary
 	if (compatibility_color.isValid())
 	{
-		const int size = original_size.height() * 0.2;
-		const int spacing = original_size.height() * 0.05;
+		const int size = canvas_size.height() * 0.2;
+		const int spacing = canvas_size.height() * 0.05;
 		QColor copyColor = QColor(compatibility_color);
 		copyColor.setAlpha(215); // ~85% opacity
 		painter.setRenderHint(QPainter::Antialiasing);
 		painter.setBrush(QBrush(copyColor));
+		painter.setPen(QPen(Qt::black, std::max(canvas_size.width() / 320, canvas_size.height() / 176)));
 		painter.drawEllipse(spacing, spacing, size, size);
 	}
 
+	// Finish the painting
 	painter.end();
 
+	// Scale and return our final image
 	return canvas.scaled(m_icon_size * device_pixel_ratio, Qt::KeepAspectRatio, Qt::TransformationMode::SmoothTransformation);
 }
 
-void game_list_frame::ShowCustomConfigIcon(game_info game)
+void game_list_frame::ShowCustomConfigIcon(const game_info& game)
 {
 	if (!game)
 	{
@@ -1743,7 +1915,7 @@ void game_list_frame::ShowCustomConfigIcon(game_info game)
 	const bool has_custom_config    = game->hasCustomConfig;
 	const bool has_custom_pad_config = game->hasCustomPadConfig;
 
-	for (auto other_game : m_game_data)
+	for (const auto& other_game : m_game_data)
 	{
 		if (other_game->info.serial == serial)
 		{
@@ -1783,7 +1955,32 @@ void game_list_frame::RepaintIcons(const bool& from_settings)
 		game->pxmap = PaintedPixmap(game->icon, game->hasCustomConfig, game->hasCustomPadConfig, color);
 	});
 
-	Refresh();
+	if (m_is_list_layout)
+	{
+		// We don't need a full Refresh just for the icons, so let's just trigger the icon callback of each icon.
+		for (int row = 0; row < m_game_list->rowCount(); ++row)
+		{
+			if (const auto item = static_cast<custom_table_widget_item*>(m_game_list->item(row, gui::column_icon)))
+			{
+				item->call_icon_func();
+			}
+		}
+
+		// Fixate vertical header and row height
+		m_game_list->verticalHeader()->setMinimumSectionSize(m_icon_size.height());
+		m_game_list->verticalHeader()->setMaximumSectionSize(m_icon_size.height());
+
+		// Resize the icon column
+		m_game_list->resizeColumnToContents(gui::column_icon);
+
+		// Shorten the last section to remove horizontal scrollbar if possible
+		m_game_list->resizeColumnToContents(gui::column_count - 1);
+	}
+	else
+	{
+		// The game grid needs to be recreated from scratch
+		Refresh();
+	}
 }
 
 void game_list_frame::SetShowHidden(bool show)
@@ -1833,7 +2030,7 @@ bool game_list_frame::eventFilter(QObject *object, QEvent *event)
 
 		if (wheel_event->modifiers() & Qt::ControlModifier)
 		{
-			QPoint num_steps = wheel_event->angleDelta() / 8 / 15;	// http://doc.qt.io/qt-5/qwheelevent.html#pixelDelta
+			const QPoint num_steps = wheel_event->angleDelta() / 8 / 15; // http://doc.qt.io/qt-5/qwheelevent.html#pixelDelta
 			const int value = num_steps.y();
 			Q_EMIT RequestIconSizeChange(value);
 			return true;
@@ -1850,7 +2047,7 @@ bool game_list_frame::eventFilter(QObject *object, QEvent *event)
 				Q_EMIT RequestIconSizeChange(1);
 				return true;
 			}
-			else if (key_event->key() == Qt::Key_Minus)
+			if (key_event->key() == Qt::Key_Minus)
 			{
 				Q_EMIT RequestIconSizeChange(-1);
 				return true;
@@ -1870,7 +2067,7 @@ bool game_list_frame::eventFilter(QObject *object, QEvent *event)
 				if (!item || !item->isSelected())
 					return false;
 
-				game_info gameinfo = GetGameInfoFromItem(item);
+				const game_info gameinfo = GetGameInfoFromItem(item);
 
 				if (!gameinfo)
 					return false;
@@ -1893,17 +2090,23 @@ void game_list_frame::PopulateGameList()
 {
 	int selected_row = -1;
 
-	std::string selected_item = CurrentSelectionPath();
+	const std::string selected_item = CurrentSelectionPath();
 
-	m_game_list->clearSelection();
-	m_game_list->clearContents();
+	m_game_list->clear_list();
 	m_game_list->setRowCount(m_game_data.size());
 
 	// Default locale. Uses current Qt application language.
 	const QLocale locale{};
 	const Localized localized;
 
-	int row = 0, index = -1;
+	const QString game_icon_path = m_play_hover_movies ? qstr(fs::get_config_dir() + "/Icons/game_icons/") : "";
+
+	static QIcon icon_combo_config_bordered(":/Icons/combo_config_bordered.png");
+	static QIcon icon_custom_config(":/Icons/custom_config.png");
+	static QIcon icon_controllers(":/Icons/controllers.png");
+
+	int row = 0;
+	int index = -1;
 	for (const auto& game : m_game_data)
 	{
 		index++;
@@ -1917,23 +2120,46 @@ void game_list_frame::PopulateGameList()
 
 		// Icon
 		custom_table_widget_item* icon_item = new custom_table_widget_item;
-		icon_item->setData(Qt::DecorationRole, game->pxmap);
+
+		icon_item->set_icon_func([this, icon_item, game](int)
+		{
+			ensure(icon_item);
+
+			if (QMovie* movie = icon_item->movie(); movie && icon_item->get_active())
+			{
+				icon_item->setData(Qt::DecorationRole, movie->currentPixmap().scaled(m_icon_size, Qt::KeepAspectRatio));
+			}
+			else
+			{
+				icon_item->setData(Qt::DecorationRole, game->pxmap);
+				if (movie)
+				{
+					movie->stop();
+				}
+			}
+		});
+
+		if (m_play_hover_movies && game->has_hover_gif)
+		{
+			icon_item->init_movie(game_icon_path % serial % "/hover.gif");
+		}
+
 		icon_item->setData(Qt::UserRole, index, true);
-		icon_item->setData(gui::game_role, QVariant::fromValue(game));
+		icon_item->setData(gui::custom_roles::game_role, QVariant::fromValue(game));
 
 		// Title
 		custom_table_widget_item* title_item = new custom_table_widget_item(title);
 		if (game->hasCustomConfig && game->hasCustomPadConfig)
 		{
-			title_item->setIcon(QIcon(":/Icons/combo_config_bordered.png"));
+			title_item->setIcon(icon_combo_config_bordered);
 		}
 		else if (game->hasCustomConfig)
 		{
-			title_item->setIcon(QIcon(":/Icons/custom_config.png"));
+			title_item->setIcon(icon_custom_config);
 		}
 		else if (game->hasCustomPadConfig)
 		{
-			title_item->setIcon(QIcon(":/Icons/controllers.png"));
+			title_item->setIcon(icon_controllers);
 		}
 
 		// Serial
@@ -1947,11 +2173,11 @@ void game_list_frame::PopulateGameList()
 		}
 
 		// Move Support (http://www.psdevwiki.com/ps3/PARAM.SFO#ATTRIBUTE)
-		bool supports_move = game->info.attr & 0x800000;
+		const bool supports_move = game->info.attr & 0x800000;
 
 		// Compatibility
 		custom_table_widget_item* compat_item = new custom_table_widget_item;
-		compat_item->setText(game->compat.text + (game->compat.date.isEmpty() ? "" : " (" + game->compat.date + ")"));
+		compat_item->setText(game->compat.text % (game->compat.date.isEmpty() ? QStringLiteral("") : " (" % game->compat.date % ")"));
 		compat_item->setData(Qt::UserRole, game->compat.index, true);
 		compat_item->setToolTip(game->compat.tooltip);
 		if (!game->compat.color.isEmpty())
@@ -2025,15 +2251,15 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 
 	m_game_grid->deleteLater();
 
-	const bool showText = m_icon_size_index > gui::gl_max_slider_pos * 2 / 5;
+	const bool show_text = m_icon_size_index > gui::gl_max_slider_pos * 2 / 5;
 
 	if (m_icon_size_index < gui::gl_max_slider_pos * 2 / 3)
 	{
-		m_game_grid = new game_list_grid(image_size, image_color, m_margin_factor, m_text_factor * 2, showText);
+		m_game_grid = new game_list_grid(image_size, image_color, m_margin_factor, m_text_factor * 2, show_text);
 	}
 	else
 	{
-		m_game_grid = new game_list_grid(image_size, image_color, m_margin_factor, m_text_factor, showText);
+		m_game_grid = new game_list_grid(image_size, image_color, m_margin_factor, m_text_factor, show_text);
 	}
 
 	// Get list of matching apps
@@ -2062,27 +2288,30 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 	m_game_grid->setRowCount(max_rows);
 	m_game_grid->setColumnCount(maxCols);
 
+	const QString game_icon_path = m_play_hover_movies ? qstr(fs::get_config_dir() + "/Icons/game_icons/") : "";
+
 	for (const auto& app : matching_apps)
 	{
 		const QString serial = qstr(app->info.serial);
 		const QString title = m_titles.value(serial, qstr(app->info.name));
 		const QString notes = m_notes.value(serial);
 
-		m_game_grid->addItem(app->pxmap, title, r, c);
-		m_game_grid->item(r, c)->setData(gui::game_role, QVariant::fromValue(app));
+		movie_item* item = m_game_grid->addItem(app, title, (m_play_hover_movies && app->has_hover_gif) ? (game_icon_path % serial % "/hover.gif") : QStringLiteral(""), r, c);
+		ensure(item);
+		item->setData(gui::game_role, QVariant::fromValue(app));
 
 		if (!notes.isEmpty())
 		{
-			m_game_grid->item(r, c)->setToolTip(tr("%0 [%1]\n\nNotes:\n%2").arg(title).arg(serial).arg(notes));
+			item->setToolTip(tr("%0 [%1]\n\nNotes:\n%2").arg(title).arg(serial).arg(notes));
 		}
 		else
 		{
-			m_game_grid->item(r, c)->setToolTip(tr("%0 [%1]").arg(title).arg(serial));
+			item->setToolTip(tr("%0 [%1]").arg(title).arg(serial));
 		}
 
 		if (selected_item == app->info.path + app->info.icon_path)
 		{
-			m_game_grid->setCurrentCell(r, c);
+			m_game_grid->setCurrentItem(item);
 		}
 
 		if (++c >= maxCols)
@@ -2096,9 +2325,9 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 	{ // if left over games exist -- if empty entries exist
 		for (int col = c; col < maxCols; ++col)
 		{
-			QTableWidgetItem* emptyItem = new QTableWidgetItem();
-			emptyItem->setFlags(Qt::NoItemFlags);
-			m_game_grid->setItem(r, col, emptyItem);
+			movie_item* empty_item = new movie_item();
+			empty_item->setFlags(Qt::NoItemFlags);
+			m_game_grid->setItem(r, col, empty_item);
 		}
 	}
 
@@ -2144,12 +2373,9 @@ std::string game_list_frame::CurrentSelectionPath()
 
 	if (item)
 	{
-		const QVariant var = item->data(gui::game_role);
-
-		if (var.canConvert<game_info>())
+		if (const QVariant var = item->data(gui::game_role); var.canConvert<game_info>())
 		{
-			auto game = var.value<game_info>();
-			if (game)
+			if (const game_info game = var.value<game_info>())
 			{
 				selection = game->info.path + game->info.icon_path;
 			}
@@ -2191,7 +2417,7 @@ std::string game_list_frame::GetStringFromU32(const u32& key, const std::map<u32
 	return sstr(string.join(", "));
 }
 
-game_info game_list_frame::GetGameInfoByMode(const QTableWidgetItem* item)
+game_info game_list_frame::GetGameInfoByMode(const QTableWidgetItem* item) const
 {
 	if (!item)
 	{
@@ -2222,7 +2448,7 @@ game_info game_list_frame::GetGameInfoFromItem(const QTableWidgetItem* item)
 	return var.value<game_info>();
 }
 
-QColor game_list_frame::getGridCompatibilityColor(const QString& string)
+QColor game_list_frame::getGridCompatibilityColor(const QString& string) const
 {
 	if (m_draw_compat_status_to_grid && !m_is_list_layout)
 	{
@@ -2236,6 +2462,26 @@ void game_list_frame::SetShowCompatibilityInGrid(bool show)
 	m_draw_compat_status_to_grid = show;
 	RepaintIcons();
 	m_gui_settings->SetValue(gui::gl_draw_compat, show);
+}
+
+void game_list_frame::SetShowCustomIcons(bool show)
+{
+	if (m_show_custom_icons != show)
+	{
+		m_show_custom_icons = show;
+		m_gui_settings->SetValue(gui::gl_custom_icon, show);
+		Refresh(true);
+	}
+}
+
+void game_list_frame::SetPlayHoverGifs(bool play)
+{
+	if (m_play_hover_movies != play)
+	{
+		m_play_hover_movies = play;
+		m_gui_settings->SetValue(gui::gl_hover_gifs, play);
+		Refresh(true);
+	}
 }
 
 QList<game_info> game_list_frame::GetGameInfo() const

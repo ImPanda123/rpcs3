@@ -46,6 +46,9 @@ protected:
 	cpu_thread(u32 id);
 
 public:
+	cpu_thread(const cpu_thread&) = delete;
+	cpu_thread& operator=(const cpu_thread&) = delete;
+
 	virtual ~cpu_thread();
 	void operator()();
 
@@ -144,7 +147,7 @@ public:
 	virtual void cpu_return() {}
 
 	// Callback for thread_ctrl::wait or RSX wait
-	virtual void cpu_wait(bs_t<cpu_flag> flags);
+	virtual void cpu_wait(bs_t<cpu_flag> old);
 
 	// Callback for function abortion stats on Emu.Stop()
 	virtual void cpu_on_stop() {}
@@ -172,9 +175,6 @@ public:
 
 		// Internal method
 		bool push(cpu_thread* _this) noexcept;
-
-		// Called after suspend_post
-		void post() noexcept;
 	};
 
 	// Suspend all threads and execute op (may be executed by other thread than caller!)
@@ -208,7 +208,7 @@ public:
 	}
 
 	template <u8 Prio = 0, typename F>
-	static suspend_work suspend_post(cpu_thread* _this, std::initializer_list<void*> hints, F& op)
+	static suspend_work suspend_post(cpu_thread* /*_this*/, std::initializer_list<void*> hints, F& op)
 	{
 		constexpr u8 prio = Prio > 3 ? 3 : Prio;
 
@@ -243,13 +243,16 @@ public:
 
 	// Send signal to the profiler(s) to flush results
 	static void flush_profilers() noexcept;
+
+private:
+	static thread_local cpu_thread* g_tls_this_thread;
+
+	friend cpu_thread* get_current_cpu_thread() noexcept;
 };
 
 inline cpu_thread* get_current_cpu_thread() noexcept
 {
-	extern thread_local cpu_thread* g_tls_current_cpu_thread;
-
-	return g_tls_current_cpu_thread;
+	return cpu_thread::g_tls_this_thread;
 }
 
 class ppu_thread;

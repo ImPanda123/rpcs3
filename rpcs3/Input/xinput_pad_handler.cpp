@@ -59,6 +59,7 @@ xinput_pad_handler::xinput_pad_handler() : PadHandlerBase(pad_handler::xinput)
 	b_has_config = true;
 	b_has_rumble = true;
 	b_has_deadzones = true;
+	b_has_battery = true;
 
 	m_name_string = "XInput Pad #";
 	m_max_devices = XUSER_MAX_COUNT;
@@ -129,7 +130,7 @@ void xinput_pad_handler::init_config(pad_config* cfg, const std::string& name)
 
 void xinput_pad_handler::SetPadData(const std::string& padId, u32 largeMotor, u32 smallMotor, s32/* r*/, s32/* g*/, s32/* b*/, bool /*battery_led*/, u32 /*battery_led_brightness*/)
 {
-	int device_number = GetDeviceNumber(padId);
+	const int device_number = GetDeviceNumber(padId);
 	if (device_number < 0)
 		return;
 
@@ -143,16 +144,51 @@ void xinput_pad_handler::SetPadData(const std::string& padId, u32 largeMotor, u3
 	(*xinputSetState)(static_cast<u32>(device_number), &vibrate);
 }
 
+u32 xinput_pad_handler::get_battery_level(const std::string& padId)
+{
+	const int device_number = GetDeviceNumber(padId);
+	if (device_number < 0)
+		return 0;
+
+	// Receive Battery Info. If device is not on cable, get battery level, else assume full.
+	XINPUT_BATTERY_INFORMATION battery_info;
+	(*xinputGetBatteryInformation)(device_number, BATTERY_DEVTYPE_GAMEPAD, &battery_info);
+
+	switch (battery_info.BatteryType)
+	{
+	case BATTERY_TYPE_DISCONNECTED:
+		return 0;
+	case BATTERY_TYPE_WIRED:
+		return 100;
+	default:
+		break;
+	}
+
+	switch (battery_info.BatteryLevel)
+	{
+	case BATTERY_LEVEL_EMPTY:
+		return 0;
+	case BATTERY_LEVEL_LOW:
+		return 33;
+	case BATTERY_LEVEL_MEDIUM:
+		return 66;
+	case BATTERY_LEVEL_FULL:
+		return 100;
+	default:
+		return 0;
+	}
+}
+
 int xinput_pad_handler::GetDeviceNumber(const std::string& padId)
 {
 	if (!Init())
 		return -1;
 
-	usz pos = padId.find(m_name_string);
+	const usz pos = padId.find(m_name_string);
 	if (pos == umax)
 		return -1;
 
-	int device_number = std::stoul(padId.substr(pos + 12)) - 1; // Controllers 1-n in GUI
+	const int device_number = std::stoul(padId.substr(pos + 12)) - 1; // Controllers 1-n in GUI
 	if (device_number >= XUSER_MAX_COUNT)
 		return -1;
 
@@ -184,10 +220,10 @@ xinput_pad_handler::PadButtonValues xinput_pad_handler::get_button_values_base(c
 	values[XInputKeyCodes::RT] = state.Gamepad.bRightTrigger;
 
 	// Sticks
-	int lx = state.Gamepad.sThumbLX;
-	int ly = state.Gamepad.sThumbLY;
-	int rx = state.Gamepad.sThumbRX;
-	int ry = state.Gamepad.sThumbRY;
+	const int lx = state.Gamepad.sThumbLX;
+	const int ly = state.Gamepad.sThumbLY;
+	const int rx = state.Gamepad.sThumbRX;
+	const int ry = state.Gamepad.sThumbRY;
 
 	// Left Stick X Axis
 	values[XInputKeyCodes::LSXNeg] = lx < 0 ? abs(lx) - 1 : 0;
@@ -206,7 +242,7 @@ xinput_pad_handler::PadButtonValues xinput_pad_handler::get_button_values_base(c
 	values[XInputKeyCodes::RSYPos] = ry > 0 ? ry : 0;
 
 	// Buttons
-	WORD buttons = state.Gamepad.wButtons;
+	const WORD buttons = state.Gamepad.wButtons;
 
 	// A, B, X, Y
 	values[XInputKeyCodes::A] = buttons & XINPUT_GAMEPAD_A ? 255 : 0;
@@ -243,10 +279,10 @@ xinput_pad_handler::PadButtonValues xinput_pad_handler::get_button_values_scp(co
 	values[xinput_pad_handler::XInputKeyCodes::RT] = static_cast<u16>(state.SCP_R2 * 255.0f);
 
 	// Sticks
-	float lx = state.SCP_LX;
-	float ly = state.SCP_LY;
-	float rx = state.SCP_RX;
-	float ry = state.SCP_RY;
+	const float lx = state.SCP_LX;
+	const float ly = state.SCP_LY;
+	const float rx = state.SCP_RX;
+	const float ry = state.SCP_RY;
 
 	// Left Stick X Axis
 	values[xinput_pad_handler::XInputKeyCodes::LSXNeg] = lx < 0.0f ? static_cast<u16>(lx * -32768.0f) : 0;
@@ -376,7 +412,7 @@ std::vector<std::string> xinput_pad_handler::ListDevices()
 std::shared_ptr<PadDevice> xinput_pad_handler::get_device(const std::string& device)
 {
 	// Convert device string to u32 representing xinput device number
-	int device_number = GetDeviceNumber(device);
+	const int device_number = GetDeviceNumber(device);
 	if (device_number < 0)
 		return nullptr;
 
@@ -455,7 +491,7 @@ void xinput_pad_handler::get_extended_info(const std::shared_ptr<PadDevice>& dev
 	if (!dev || !pad)
 		return;
 
-	auto padnum = dev->deviceNumber;
+	const auto padnum = dev->deviceNumber;
 
 	// Receive Battery Info. If device is not on cable, get battery level, else assume full
 	XINPUT_BATTERY_INFORMATION battery_info;
@@ -482,16 +518,16 @@ void xinput_pad_handler::apply_pad_data(const std::shared_ptr<PadDevice>& device
 	if (!dev || !pad)
 		return;
 
-	auto padnum = dev->deviceNumber;
-	auto profile = dev->config;
+	const auto padnum = dev->deviceNumber;
+	const auto profile = dev->config;
 
 	// The left motor is the low-frequency rumble motor. The right motor is the high-frequency rumble motor.
 	// The two motors are not the same, and they create different vibration effects. Values range between 0 to 65535.
-	usz idx_l = profile->switch_vibration_motors ? 1 : 0;
-	usz idx_s = profile->switch_vibration_motors ? 0 : 1;
+	const usz idx_l = profile->switch_vibration_motors ? 1 : 0;
+	const usz idx_s = profile->switch_vibration_motors ? 0 : 1;
 
-	u16 speed_large = profile->enable_vibration_motor_large ? pad->m_vibrateMotors[idx_l].m_value : static_cast<u16>(vibration_min);
-	u16 speed_small = profile->enable_vibration_motor_small ? pad->m_vibrateMotors[idx_s].m_value : static_cast<u16>(vibration_min);
+	const u16 speed_large = profile->enable_vibration_motor_large ? pad->m_vibrateMotors[idx_l].m_value : static_cast<u16>(vibration_min);
+	const u16 speed_small = profile->enable_vibration_motor_small ? pad->m_vibrateMotors[idx_s].m_value : static_cast<u16>(vibration_min);
 
 	dev->newVibrateData |= dev->largeVibrate != speed_large || dev->smallVibrate != speed_small;
 

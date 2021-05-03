@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Emu/System.h"
 #include "Emu/VFS.h"
+#include "Emu/IdManager.h"
 #include "Emu/localized_string.h"
 #include "Emu/Cell/lv2/sys_fs.h"
 #include "Emu/Cell/lv2/sys_sync.h"
@@ -15,8 +16,8 @@
 #include "Loader/PSF.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/span.h"
+#include "Utilities/date_time.h"
 
-#include <thread>
 #include <mutex>
 #include <algorithm>
 
@@ -51,6 +52,23 @@ void fmt_class_string<CellSaveDataError>::format(std::string& out, u64 arg)
 
 SaveDialogBase::~SaveDialogBase()
 {
+}
+
+std::string SaveDataEntry::date() const
+{
+	return date_time::fmt_time("%c", mtime);
+}
+
+std::string SaveDataEntry::data_size() const
+{
+	std::string metric = "KB";
+	u64 sz = utils::aligned_div(size, 1000);
+	if (sz > 1000)
+	{
+		metric = "MB";
+		sz = utils::aligned_div(sz, 1000);
+	}
+	return fmt::format("%lu %s", sz, metric);
 }
 
 // cellSaveData aliases (only for cellSaveData.cpp)
@@ -95,9 +113,10 @@ namespace
 
 vm::gvar<savedata_context> g_savedata_context;
 
-struct savedata_mutex
+struct savedata_manager
 {
 	semaphore<> mutex;
+	atomic_t<bool> enable_overlay{false};
 };
 
 static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, const std::string& prefix)
@@ -163,7 +182,7 @@ static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, 
 
 static error_code select_and_delete(ppu_thread& ppu)
 {
-	std::unique_lock lock(g_fxo->get<savedata_mutex>().mutex, std::try_to_lock);
+	std::unique_lock lock(g_fxo->get<savedata_manager>().mutex, std::try_to_lock);
 
 	if (!lock)
 	{
@@ -185,7 +204,7 @@ static error_code select_and_delete(ppu_thread& ppu)
 		// Display a blocking Save Data List asynchronously in the GUI thread.
 		if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
 		{
-			selected = save_dialog->ShowSaveDataList(save_entries, focused, SAVEDATA_OP_LIST_DELETE, vm::null);
+			selected = save_dialog->ShowSaveDataList(save_entries, focused, SAVEDATA_OP_LIST_DELETE, vm::null, g_fxo->get<savedata_manager>().enable_overlay);
 		}
 
 		// Reschedule after a blocking dialog returns
@@ -314,7 +333,7 @@ static error_code display_callback_result_error_message(ppu_thread& ppu, const C
 
 static std::string get_confirmation_message(u32 operation, const SaveDataEntry& entry)
 {
-	const std::string info = entry.title + "\n" + entry.subtitle + "\n" + entry.details;
+	const std::string info = fmt::format("%s\n%s\n%s\n%s\n\n%s", entry.title, entry.subtitle, entry.date(), entry.data_size(), entry.details);
 
 	if (operation == SAVEDATA_OP_LIST_DELETE || operation == SAVEDATA_OP_FIXED_DELETE)
 	{
@@ -334,7 +353,7 @@ static std::string get_confirmation_message(u32 operation, const SaveDataEntry& 
 
 static s32 savedata_check_args(u32 operation, u32 version, vm::cptr<char> dirName,
 	u32 errDialog, PSetList setList, PSetBuf setBuf, PFuncList funcList, PFuncFixed funcFixed, PFuncStat funcStat,
-	PFuncFile funcFile, u32 container, u32 unk_op_flags, vm::ptr<void> userdata, u32 userId, PFuncDone funcDone)
+	PFuncFile funcFile, u32 /*container*/, u32 unk_op_flags, vm::ptr<void> /*userdata*/, u32 userId, PFuncDone /*funcDone*/)
 {
 	if (version > CELL_SAVEDATA_VERSION_420)
 	{
@@ -558,7 +577,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		return {CELL_SAVEDATA_ERROR_PARAM, std::to_string(ecode)};
 	}
 
-	std::unique_lock lock(g_fxo->get<savedata_mutex>().mutex, std::try_to_lock);
+	std::unique_lock lock(g_fxo->get<savedata_manager>().mutex, std::try_to_lock);
 
 	if (!lock)
 	{
@@ -609,7 +628,13 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		listGet->dirList.set(setBuf->buf.addr());
 		std::memset(listGet->reserved, 0, sizeof(listGet->reserved));
 
-		const auto prefix_list = fmt::split(setList->dirNamePrefix.get_ptr(), {"|"});
+		auto prefix_list = fmt::split(setList->dirNamePrefix.get_ptr(), {"|"});
+
+		// if prefix_list is empty game wants to check all savedata
+		if (prefix_list.empty() && (operation == SAVEDATA_OP_LIST_LOAD || operation == SAVEDATA_OP_FIXED_LOAD))
+		{
+			prefix_list = {""};
+		}
 
 		// get the saves matching the supplied prefix
 		for (auto&& entry : fs::dir(base_dir))
@@ -925,7 +950,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 					return {CELL_SAVEDATA_ERROR_PARAM, "34"};
 				}
 
-				//TODO: If adding the new data to the save_entries vector
+				// TODO: If adding the new data to the save_entries vector
 				// to be displayed in the save mangaer UI, it should be focused here
 				break;
 			}
@@ -992,7 +1017,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			// Display a blocking Save Data List asynchronously in the GUI thread.
 			if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
 			{
-				selected = save_dialog->ShowSaveDataList(save_entries, focused, operation, listSet);
+				selected = save_dialog->ShowSaveDataList(save_entries, focused, operation, listSet, g_fxo->get<savedata_manager>().enable_overlay);
 			}
 			else
 			{
@@ -1016,7 +1041,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			// UI returns -1 for new save games
 			if (selected == -1)
 			{
-				message = get_localized_string(localized_string_id::CELL_SAVEDATA_CREATE_CONFIRMATION);
+				message = get_localized_string(localized_string_id::CELL_SAVEDATA_SAVE_CONFIRMATION);
 				save_entry.dirName = listSet->newData->dirName.get_ptr();
 				save_entry.escaped = vfs::escape(save_entry.dirName);
 			}
@@ -1046,6 +1071,10 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (g_last_user_response != CELL_MSGDIALOG_BUTTON_YES)
 			{
+				if (selected >= 0)
+				{
+					focused = selected;
+				}
 				continue;
 			}
 
@@ -1144,7 +1173,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 				if (selected == -1)
 				{
-					message = get_localized_string(localized_string_id::CELL_SAVEDATA_CREATE_CONFIRMATION);
+					message = get_localized_string(localized_string_id::CELL_SAVEDATA_SAVE_CONFIRMATION);
 				}
 				else
 				{
@@ -2278,7 +2307,9 @@ error_code cellSaveDataUserFixedDelete(ppu_thread& ppu, u32 userId, PSetList set
 
 void cellSaveDataEnableOverlay(s32 enable)
 {
-	cellSaveData.error("cellSaveDataEnableOverlay(enable=%d)", enable);
+	cellSaveData.notice("cellSaveDataEnableOverlay(enable=%d)", enable);
+	auto& manager = g_fxo->get<savedata_manager>();
+	manager.enable_overlay = enable != 0;
 }
 
 
@@ -2289,6 +2320,11 @@ error_code cellSaveDataListDelete(ppu_thread& ppu, PSetList setList, PSetBuf set
 
 	return savedata_op(ppu, SAVEDATA_OP_LIST_DELETE, 0, vm::null, 0, setList, setBuf, funcList, vm::null, vm::null, vm::null, container, 0x40, userdata, 0, funcDone);
 }
+
+// Temporarily
+#ifndef _MSC_VER
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
 
 error_code cellSaveDataListImport(ppu_thread& ppu, PSetList setList, u32 maxSizeKB, PFuncDone funcDone, u32 container, vm::ptr<void> userdata)
 {

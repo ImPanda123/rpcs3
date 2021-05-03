@@ -203,7 +203,7 @@ namespace vk
 		u32 dst_queue = new_queue_family;
 
 		if (current_queue_family == VK_QUEUE_FAMILY_IGNORED)
-		 {
+		{
 			// Implicit acquisition
 			dst_queue = VK_QUEUE_FAMILY_IGNORED;
 		}
@@ -213,6 +213,20 @@ namespace vk
 
 		current_layout = new_layout;
 		current_queue_family = new_queue_family;
+	}
+
+	void image::set_debug_name(const std::string& name)
+	{
+		if (g_render_device->get_debug_utils_support())
+		{
+			VkDebugUtilsObjectNameInfoEXT name_info{};
+			name_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+			name_info.objectType = VK_OBJECT_TYPE_IMAGE;
+			name_info.objectHandle = reinterpret_cast<u64>(value);
+			name_info.pObjectName = name.c_str();
+
+			g_render_device->_vkSetDebugUtilsObjectNameEXT(m_device, &name_info);
+		}
 	}
 
 	image_view::image_view(VkDevice dev, VkImage image, VkImageViewType view_type, VkFormat format, VkComponentMapping mapping, VkImageSubresourceRange range)

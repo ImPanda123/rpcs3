@@ -3,13 +3,10 @@
 #include "../Overlays/Shaders/shader_loading_dialog_native.h"
 #include "GLGSRender.h"
 #include "GLCompute.h"
-#include "GLVertexProgram.h"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/RSX/rsx_methods.h"
 
 #include "../Common/program_state_cache2.hpp"
-
-#define DUMP_VERTEX_DATA 0
 
 u64 GLGSRender::get_cycles()
 {
@@ -197,10 +194,10 @@ void GLGSRender::on_init_thread()
 	{
 		rsx_log.warning("Forcing use of legacy OpenGL buffers because ARB_buffer_storage is not supported");
 		// TODO: do not modify config options
-		g_cfg.video.gl_legacy_buffers.from_string("true");
+		g_cfg.video.renderdoc_compatiblity.from_string("true");
 	}
 
-	if (g_cfg.video.gl_legacy_buffers)
+	if (g_cfg.video.renderdoc_compatiblity)
 	{
 		rsx_log.warning("Using legacy openGL buffers.");
 		manually_flush_ring_buffers = true;
@@ -588,7 +585,7 @@ void GLGSRender::clear_surface(u32 arg)
 		case rsx::surface_color_format::w16z16y16x16:
 		case rsx::surface_color_format::w32z32y32x32:
 		{
-			//Nop
+			// Nop
 			colormask = 0;
 			break;
 		}

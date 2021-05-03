@@ -1,8 +1,9 @@
 #include "stdafx.h"
-#include "VKHelpers.h"
-#include "VKFormats.h"
+#include "VKAsyncScheduler.h"
 #include "VKCompute.h"
 #include "VKDMA.h"
+#include "VKHelpers.h"
+#include "VKFormats.h"
 #include "VKRenderPass.h"
 #include "VKRenderTargets.h"
 
@@ -514,7 +515,7 @@ namespace vk
 				ensure(!dst_rect.is_flipped());
 
 				auto stretch_image_typeless_unsafe = [&cmd, filter](vk::image* src, vk::image* dst, vk::image* typeless,
-						const areai& src_rect, const areai& dst_rect, VkImageAspectFlags aspect, VkImageAspectFlags transfer_flags = 0xFF)
+						const areai& src_rect, const areai& dst_rect, VkImageAspectFlags /*aspect*/, VkImageAspectFlags transfer_flags = 0xFF)
 				{
 					const auto src_w = src_rect.width();
 					const auto src_h = src_rect.height();
@@ -800,12 +801,11 @@ namespace vk
 	static const vk::command_buffer& prepare_for_transfer(const vk::command_buffer& primary_cb, vk::image* dst_image, rsx::flags32_t& flags)
 	{
 		const vk::command_buffer* pcmd = nullptr;
-#if 0
 		if (flags & image_upload_options::upload_contents_async)
 		{
-			auto cb = vk::async_transfer_get_current();
-			cb->begin();
-			pcmd = cb;
+			auto async_cmd = g_fxo->get<vk::async_scheduler_thread>().get_current();
+			async_cmd->begin();
+			pcmd = async_cmd;
 
 			if (!(flags & image_upload_options::preserve_image_layout))
 			{
@@ -813,7 +813,6 @@ namespace vk
 			}
 		}
 		else
-#endif
 		{
 			if (vk::is_renderpass_open(primary_cb))
 			{
@@ -833,21 +832,61 @@ namespace vk
 		return *pcmd;
 	}
 
-	void upload_image(const vk::command_buffer& cmd, vk::image* dst_image,
-		const std::vector<rsx::subresource_layout>& subresource_layout, int format, bool is_swizzled, u16 mipmap_count,
-		VkImageAspectFlags flags, vk::data_heap &upload_heap, u32 heap_align, rsx::flags32_t image_setup_flags)
+	static const std::pair<u32, u32> calculate_upload_pitch(int format, u32 heap_align, vk::image* dst_image, const rsx::subresource_layout& layout)
 	{
-		const bool requires_depth_processing = (dst_image->aspect() & VK_IMAGE_ASPECT_STENCIL_BIT) || (format == CELL_GCM_TEXTURE_DEPTH16_FLOAT);
 		u32 block_in_pixel = rsx::get_format_block_size_in_texel(format);
 		u8  block_size_in_bytes = rsx::get_format_block_size_in_bytes(format);
 
+		u32 row_pitch, upload_pitch_in_texel;
+
+		if (!heap_align) [[likely]]
+		{
+			if (!layout.border) [[likely]]
+			{
+				row_pitch = (layout.pitch_in_block * block_size_in_bytes);
+			}
+			else
+			{
+				// Skip the border texels if possible. Padding is undesirable for GPU deswizzle
+				row_pitch = (layout.width_in_block * block_size_in_bytes);
+			}
+
+			// We have row_pitch in source coordinates. But some formats have a software decode step which can affect this packing!
+			// For such formats, the packed pitch on src does not match packed pitch on dst
+			if (!rsx::is_compressed_host_format(format))
+			{
+				const auto host_texel_width = vk::get_format_texel_width(dst_image->format());
+				const auto host_packed_pitch = host_texel_width * layout.width_in_texel;
+				row_pitch = std::max<u32>(row_pitch, host_packed_pitch);
+				upload_pitch_in_texel = row_pitch / host_texel_width;
+			}
+			else
+			{
+				upload_pitch_in_texel = std::max<u32>(block_in_pixel * row_pitch / block_size_in_bytes, layout.width_in_texel);
+			}
+		}
+		else
+		{
+			row_pitch = rsx::align2(layout.width_in_block * block_size_in_bytes, heap_align);
+			upload_pitch_in_texel = std::max<u32>(block_in_pixel * row_pitch / block_size_in_bytes, layout.width_in_texel);
+			ensure(row_pitch == heap_align);
+		}
+
+		return { row_pitch, upload_pitch_in_texel };
+	}
+
+	void upload_image(const vk::command_buffer& cmd, vk::image* dst_image,
+		const std::vector<rsx::subresource_layout>& subresource_layout, int format, bool is_swizzled, u16 /*mipmap_count*/,
+		VkImageAspectFlags flags, vk::data_heap &upload_heap, u32 heap_align, rsx::flags32_t image_setup_flags)
+	{
+		const bool requires_depth_processing = (dst_image->aspect() & VK_IMAGE_ASPECT_STENCIL_BIT) || (format == CELL_GCM_TEXTURE_DEPTH16_FLOAT);
 		rsx::texture_uploader_capabilities caps{ .alignment = heap_align };
 		rsx::texture_memory_info opt{};
 		bool check_caps = true;
 
 		vk::buffer* scratch_buf = nullptr;
 		u32 scratch_offset = 0;
-		u32 row_pitch, image_linear_size;
+		u32 image_linear_size;
 
 		vk::buffer* upload_buffer = nullptr;
 		usz offset_in_upload_buffer = 0;
@@ -859,26 +898,10 @@ namespace vk
 
 		for (const rsx::subresource_layout &layout : subresource_layout)
 		{
-			if (!heap_align) [[likely]]
-			{
-				if (!layout.border) [[likely]]
-				{
-					row_pitch = (layout.pitch_in_block * block_size_in_bytes);
-				}
-				else
-				{
-					// Skip the border texels if possible. Padding is undesirable for GPU deswizzle
-					row_pitch = (layout.width_in_block * block_size_in_bytes);
-				}
+			const auto [row_pitch, upload_pitch_in_texel] = calculate_upload_pitch(format, heap_align, dst_image, layout);
+			caps.alignment = row_pitch;
 
-				caps.alignment = row_pitch;
-			}
-			else
-			{
-				row_pitch = rsx::align2(layout.width_in_block * block_size_in_bytes, heap_align);
-				ensure(row_pitch == heap_align);
-			}
-
+			// Calculate estimated memory utilization for this subresource
 			image_linear_size = row_pitch * layout.height_in_block * layout.depth;
 
 			// Map with extra padding bytes in case of realignment
@@ -909,7 +932,7 @@ namespace vk
 			copy_info.imageSubresource.layerCount = 1;
 			copy_info.imageSubresource.baseArrayLayer = layout.layer;
 			copy_info.imageSubresource.mipLevel = layout.level;
-			copy_info.bufferRowLength = std::max<u32>(block_in_pixel * row_pitch / block_size_in_bytes, layout.width_in_texel);
+			copy_info.bufferRowLength = upload_pitch_in_texel;
 
 			upload_buffer = upload_heap.heap.get();
 
@@ -994,7 +1017,7 @@ namespace vk
 					upload_commands.back().second++;
 				}
 
-				copy_info.bufferRowLength = std::max<u32>(block_in_pixel * layout.pitch_in_block, layout.width_in_texel);
+				copy_info.bufferRowLength = upload_pitch_in_texel;
 			}
 		}
 
@@ -1071,6 +1094,13 @@ namespace vk
 	{
 		vk::image* real_src = src;
 		vk::image* real_dst = dst;
+
+		if (dst->current_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			// Watch out for lazy init
+			ensure(src != dst);
+			dst->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		}
 
 		// Optimization pass; check for pass-through data transfer
 		if (!xfer_info.flip_horizontal && !xfer_info.flip_vertical && src_area.height() == dst_area.height())

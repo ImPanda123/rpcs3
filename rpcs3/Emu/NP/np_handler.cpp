@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include <thread>
 #include "Emu/system_config.h"
 #include "np_handler.h"
 #include "Emu/Cell/PPUModule.h"
@@ -27,7 +26,7 @@
 #include <unistd.h>
 #endif
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__APPLE__)
 #include <ifaddrs.h>
 #include <net/if_dl.h>
 #endif
@@ -112,7 +111,7 @@ bool np_handler::discover_ip_address()
 		return false;
 	}
 
-	nph_log.notice("Hostname was determined to be %s", hostname);
+	nph_log.notice("Hostname was determined to be %s", hostname.c_str());
 
 	hostent *host = gethostbyname(hostname.data());
 	if (!host)
@@ -140,7 +139,7 @@ bool np_handler::discover_ip_address()
 
 bool np_handler::discover_ether_address()
 {
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__APPLE__)
 	ifaddrs* ifap;
 
 	if (getifaddrs(&ifap) == 0)
@@ -276,13 +275,10 @@ const SceNpAvatarUrl& np_handler::get_avatar_url() const
 
 std::string np_handler::ip_to_string(u32 ip_addr)
 {
-	std::string result;
 	in_addr addr;
 	addr.s_addr = ip_addr;
 
-	result = inet_ntoa(addr);
-
-	return result;
+	return inet_ntoa(addr);
 }
 
 std::string np_handler::ether_to_string(std::array<u8, 6>& ether)
@@ -471,7 +467,7 @@ u32 np_handler::get_server_status(SceNpMatching2ContextId ctx_id, vm::cptr<SceNp
 	return req_id;
 }
 
-u32 np_handler::create_server_context(SceNpMatching2ContextId ctx_id, vm::cptr<SceNpMatching2RequestOptParam> optParam, u16 server_id)
+u32 np_handler::create_server_context(SceNpMatching2ContextId ctx_id, vm::cptr<SceNpMatching2RequestOptParam> optParam, u16 /*server_id*/)
 {
 	u32 req_id    = generate_callback_info(ctx_id, optParam);
 	u32 event_key = get_event_key();
@@ -636,7 +632,7 @@ void np_handler::req_sign_infos(const std::string& npid, u32 conn_id)
 	return;
 }
 
-void np_handler::req_ticket(u32 version, const SceNpId *npid, const char *service_id, const u8 *cookie, u32 cookie_size, const char *entitlement_id, u32 consumed_count)
+void np_handler::req_ticket(u32 /*version*/, const SceNpId* /*npid*/, const char* service_id, const u8* /*cookie*/, u32 /*cookie_size*/, const char* /*entitlement_id*/, u32 /*consumed_count*/)
 {
 	u32 req_id = get_req_id(0x3333);
 
@@ -910,7 +906,7 @@ bool np_handler::reply_search_room(u32 req_id, std::vector<u8>& reply_data)
 	return true;
 }
 
-bool np_handler::reply_set_roomdata_external(u32 req_id, std::vector<u8>& reply_data)
+bool np_handler::reply_set_roomdata_external(u32 req_id, std::vector<u8>& /*reply_data*/)
 {
 	if (pending_requests.count(req_id) == 0)
 		return error_and_disconnect("Unexpected reply ID to SetRoomDataExternal");
@@ -963,7 +959,7 @@ bool np_handler::reply_get_roomdata_internal(u32 req_id, std::vector<u8>& reply_
 	return true;
 }
 
-bool np_handler::reply_set_roomdata_internal(u32 req_id, std::vector<u8>& reply_data)
+bool np_handler::reply_set_roomdata_internal(u32 req_id, std::vector<u8>& /*reply_data*/)
 {
 	if (pending_requests.count(req_id) == 0)
 		return error_and_disconnect("Unexpected reply ID to SetRoomDataInternal");
@@ -1012,7 +1008,7 @@ bool np_handler::reply_get_ping_info(u32 req_id, std::vector<u8>& reply_data)
 	return true;
 }
 
-bool np_handler::reply_send_room_message(u32 req_id, std::vector<u8>& reply_data)
+bool np_handler::reply_send_room_message(u32 req_id, std::vector<u8>& /*reply_data*/)
 {
 	if (pending_requests.count(req_id) == 0)
 		return error_and_disconnect("Unexpected reply ID to PingRoomOwner");
@@ -1050,7 +1046,7 @@ bool np_handler::reply_req_sign_infos(u32 req_id, std::vector<u8>& reply_data)
 	return true;
 }
 
-bool np_handler::reply_req_ticket(u32 req_id, std::vector<u8>& reply_data)
+bool np_handler::reply_req_ticket(u32 /*req_id*/, std::vector<u8>& reply_data)
 {
 	vec_stream reply(reply_data, 1);
 	auto ticket_raw = reply.get_rawdata();
@@ -1372,7 +1368,7 @@ u8* np_handler::allocate_req_result(u32 event_key, usz size)
 	return match2_req_results[event_key].data();
 }
 
-u32 np_handler::add_players_to_history(vm::cptr<SceNpId> npids, u32 count)
+u32 np_handler::add_players_to_history(vm::cptr<SceNpId> /*npids*/, u32 /*count*/)
 {
 	const u32 req_id = get_req_id(0);
 

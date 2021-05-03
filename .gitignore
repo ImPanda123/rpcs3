@@ -9,7 +9,7 @@
 # Compiled Static libraries
 *.lai
 *.la
-# *.a # Commented out since OpenAL Soft's binaries use this extension.
+*.a
 *.opensdf
 *.sdf
 *.suo
@@ -45,6 +45,10 @@
 !/bin
 /bin/*
 
+# Audio DLLs
+!/bin/soft_oal.dll
+!/bin/xaudio2_9redist.dll
+
 # Themes
 !/bin/GuiConfigs/
 /bin/GuiConfigs/*.ini
@@ -65,6 +69,8 @@
 *.vcxproj.user
 enc_temp_folder/*
 CMakeSettings.json
+*PVS-Studio*
+PVS/*
 
 # Ignore other system generated files
 x64/*

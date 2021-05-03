@@ -54,7 +54,7 @@ struct ppu_static_function
 struct ppu_static_variable
 {
 	const char* name;
-	vm::gvar<char>* var; // Pointer to variable address storage
+	u32* var; // Pointer to variable address storage
 	void(*init)(); // Variable initialization function
 	u32 size;
 	u32 align;
@@ -75,8 +75,8 @@ class ppu_static_module final
 public:
 	const std::string name;
 
-	std::unordered_map<u32, ppu_static_function, value_hash<u32>> functions;
-	std::unordered_map<u32, ppu_static_variable, value_hash<u32>> variables;
+	std::unordered_map<u32, ppu_static_function, value_hash<u32>> functions{};
+	std::unordered_map<u32, ppu_static_variable, value_hash<u32>> variables{};
 
 public:
 	ppu_static_module(const char* name);
@@ -144,7 +144,7 @@ public:
 		auto& info = access_static_variable(_module, vnid);
 
 		info.name  = name;
-		info.var   = reinterpret_cast<vm::gvar<char>*>(Var);
+		info.var   = &Var->raw();
 		info.init  = [] {};
 		info.size  = gvar::alloc_size;
 		info.align = gvar::alloc_align;
@@ -261,6 +261,7 @@ public:
 	static const ppu_static_module sceNpTrophy;
 	static const ppu_static_module sceNpTus;
 	static const ppu_static_module sceNpUtil;
+	static const ppu_static_module sys_crashdump;
 	static const ppu_static_module sys_io;
 	static const ppu_static_module sys_net;
 	static const ppu_static_module sysPrxForUser;

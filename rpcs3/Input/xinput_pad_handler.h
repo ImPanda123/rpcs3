@@ -10,7 +10,6 @@
 #include <Windows.h>
 #include <Xinput.h>
 #include <chrono>
-#include <optional>
 
 // ScpToolkit defined structure for pressure sensitive button query
 struct SCP_EXTN
@@ -100,8 +99,8 @@ class xinput_pad_handler final : public PadHandlerBase
 		steady_clock::time_point last_vibration;
 		bool is_scp_device{ false };
 		DWORD state{ ERROR_NOT_CONNECTED }; // holds internal controller state change
-		SCP_EXTN state_scp{ 0 };
-		XINPUT_STATE state_base{ 0 };
+		SCP_EXTN state_scp{};
+		XINPUT_STATE state_base{};
 	};
 
 public:
@@ -112,6 +111,7 @@ public:
 
 	std::vector<std::string> ListDevices() override;
 	void SetPadData(const std::string& padId, u32 largeMotor, u32 smallMotor, s32 r, s32 g, s32 b, bool battery_led, u32 battery_led_brightness) override;
+	u32 get_battery_level(const std::string& padId) override;
 	void init_config(pad_config* cfg, const std::string& name) override;
 
 private:
@@ -123,8 +123,8 @@ private:
 
 private:
 	int GetDeviceNumber(const std::string& padId);
-	PadButtonValues get_button_values_base(const XINPUT_STATE& state);
-	PadButtonValues get_button_values_scp(const SCP_EXTN& state);
+	static PadButtonValues get_button_values_base(const XINPUT_STATE& state);
+	static PadButtonValues get_button_values_scp(const SCP_EXTN& state);
 
 	bool is_init{ false };
 	HMODULE library{ nullptr };

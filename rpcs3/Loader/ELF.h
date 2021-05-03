@@ -99,7 +99,7 @@ struct elf_phdr<en_t, u32>
 template<template<typename T> class en_t, typename sz_t>
 struct elf_prog final : elf_phdr<en_t, sz_t>
 {
-	std::vector<uchar> bin;
+	std::vector<uchar> bin{};
 
 	using base = elf_phdr<en_t, sz_t>;
 
@@ -180,8 +180,8 @@ public:
 
 	ehdr_t header{};
 
-	std::vector<prog_t> progs;
-	std::vector<shdr_t> shdrs;
+	std::vector<prog_t> progs{};
+	std::vector<shdr_t> shdrs{};
 
 public:
 	elf_object() = default;
@@ -241,17 +241,15 @@ public:
 
 		if (!(opts & elf_opt::no_programs))
 		{
-			_phdrs.resize(header.e_phnum);
 			stream.seek(offset + header.e_phoff);
-			if (!stream.read(_phdrs))
+			if (!stream.read<true>(_phdrs, header.e_phnum))
 				return set_error(elf_error::stream_phdrs);
 		}
 
 		if (!(opts & elf_opt::no_sections))
 		{
-			shdrs.resize(header.e_shnum);
 			stream.seek(offset + header.e_shoff);
-			if (!stream.read(shdrs))
+			if (!stream.read<true>(shdrs, header.e_shnum))
 				return set_error(elf_error::stream_shdrs);
 		}
 
@@ -265,9 +263,8 @@ public:
 
 			if (!(opts & elf_opt::no_data))
 			{
-				progs.back().bin.resize(hdr.p_filesz);
 				stream.seek(offset + hdr.p_offset);
-				if (!stream.read(progs.back().bin))
+				if (!stream.read<true>(progs.back().bin, hdr.p_filesz))
 					return set_error(elf_error::stream_data);
 			}
 		}

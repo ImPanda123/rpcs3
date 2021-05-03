@@ -3,12 +3,14 @@
 #include "VKCompute.h"
 #include "VKOverlays.h"
 
+#include "vkutils/image.h"
+
 namespace vk
 {
 	struct cs_resolve_base : compute_task
 	{
-		vk::viewable_image* multisampled;
-		vk::viewable_image* resolve;
+		vk::viewable_image* multisampled = nullptr;
+		vk::viewable_image* resolve = nullptr;
 
 		u32 cs_wave_x = 1;
 		u32 cs_wave_y = 1;
@@ -539,8 +541,8 @@ namespace vk
 		}
 	};
 
-	void resolve_image(vk::command_buffer& cmd, vk::viewable_image* dst, vk::viewable_image* src);
-	void unresolve_image(vk::command_buffer& cmd, vk::viewable_image* dst, vk::viewable_image* src);
+	//void resolve_image(vk::command_buffer& cmd, vk::viewable_image* dst, vk::viewable_image* src);
+	//void unresolve_image(vk::command_buffer& cmd, vk::viewable_image* dst, vk::viewable_image* src);
 	void reset_resolve_resources();
 	void clear_resolve_helpers();
 }

@@ -6,7 +6,6 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cstring>
-#include <cerrno>
 #include <map>
 
 #include "util/asm.hpp"
@@ -17,11 +16,6 @@ using namespace std::literals::string_literals;
 
 #include <cwchar>
 #include <Windows.h>
-
-namespace utils
-{
-	u64 get_unique_tsc();
-}
 
 static std::unique_ptr<wchar_t[]> to_wchar(const std::string& source)
 {
@@ -65,7 +59,7 @@ static void to_utf8(std::string& out, const wchar_t* source)
 	// Resize buffer
 	out.resize(buf_size - 1);
 
-	const int result = WideCharToMultiByte(CP_UTF8, 0, source, static_cast<int>(length) + 1, &out.front(), buf_size, NULL, NULL);
+	const int result = WideCharToMultiByte(CP_UTF8, 0, source, static_cast<int>(length) + 1, &out.front(), buf_size, nullptr, nullptr);
 
 	// Fix the size
 	out.resize(ensure(result) - 1);
@@ -210,13 +204,13 @@ namespace fs
 
 	class device_manager final
 	{
-		mutable shared_mutex m_mutex;
+		mutable shared_mutex m_mutex{};
 
-		std::unordered_map<std::string, std::shared_ptr<device_base>> m_map;
+		std::unordered_map<std::string, shared_ptr<device_base>> m_map{};
 
 	public:
-		std::shared_ptr<device_base> get_device(const std::string& path);
-		std::shared_ptr<device_base> set_device(const std::string& name, const std::shared_ptr<device_base>&);
+		shared_ptr<device_base> get_device(const std::string& path);
+		shared_ptr<device_base> set_device(const std::string& name, shared_ptr<device_base>);
 	};
 
 	static device_manager& get_device_manager()
@@ -230,7 +224,7 @@ namespace fs
 	{
 	}
 
-	stat_t file_base::stat()
+	[[noreturn]] stat_t file_base::stat()
 	{
 		fmt::throw_exception("fs::file::stat() not supported.");
 	}
@@ -281,48 +275,112 @@ namespace fs
 	{
 	}
 
+	device_base::device_base()
+		: fs_prefix(fmt::format("/vfsv0_%s%s_", fmt::base57(reinterpret_cast<u64>(this)), fmt::base57(utils::get_unique_tsc())))
+	{
+	}
+
 	device_base::~device_base()
 	{
 	}
+
+	bool device_base::remove_dir(const std::string&)
+	{
+		g_tls_error = error::readonly;
+		return false;
+	}
+
+	bool device_base::create_dir(const std::string&)
+	{
+		g_tls_error = error::readonly;
+		return false;
+	}
+
+	bool device_base::rename(const std::string&, const std::string&)
+	{
+		g_tls_error = error::readonly;
+		return false;
+	}
+
+	bool device_base::remove(const std::string&)
+	{
+		g_tls_error = error::readonly;
+		return false;
+	}
+
+	bool device_base::trunc(const std::string&, u64)
+	{
+		g_tls_error = error::readonly;
+		return false;
+	}
+
+	bool device_base::utime(const std::string&, s64, s64)
+	{
+		g_tls_error = error::readonly;
+		return false;
+	}
 }
 
-std::shared_ptr<fs::device_base> fs::device_manager::get_device(const std::string& path)
+shared_ptr<fs::device_base> fs::device_manager::get_device(const std::string& path)
 {
 	reader_lock lock(m_mutex);
 
-	const auto found = m_map.find(path.substr(0, path.find_first_of('/', 2)));
+	const usz prefix = path.find_first_of('_', 7) + 1;
 
-	if (found == m_map.end())
+	const auto found = m_map.find(path.substr(prefix, path.find_first_of('/', 1) - prefix));
+
+	if (found == m_map.end() || !path.starts_with(found->second->fs_prefix))
 	{
-		return nullptr;
+		return null_ptr;
 	}
 
 	return found->second;
 }
 
-std::shared_ptr<fs::device_base> fs::device_manager::set_device(const std::string& name, const std::shared_ptr<device_base>& device)
+shared_ptr<fs::device_base> fs::device_manager::set_device(const std::string& name, shared_ptr<device_base> device)
 {
 	std::lock_guard lock(m_mutex);
 
-	return m_map[name] = device;
+	if (device)
+	{
+		// Adding
+		if (auto [it, ok] = m_map.try_emplace(name, std::move(device)); ok)
+		{
+			return it->second;
+		}
+
+		g_tls_error = error::exist;
+	}
+	else
+	{
+		// Removing
+		if (auto found = m_map.find(name); found != m_map.end())
+		{
+			device = std::move(found->second);
+			m_map.erase(found);
+			return device;
+		}
+
+		g_tls_error = error::noent;
+	}
+
+	return null_ptr;
 }
 
-std::shared_ptr<fs::device_base> fs::get_virtual_device(const std::string& path)
+shared_ptr<fs::device_base> fs::get_virtual_device(const std::string& path)
 {
-	// Every virtual device path must have "//" at the beginning
-	if (path.starts_with("//"))
+	// Every virtual device path must have specific name at the beginning
+	if (path.starts_with("/vfsv0_") && path.size() >= 8 + 22 && path[29] == '_' && path.find_first_of('/', 1) > 29)
 	{
 		return get_device_manager().get_device(path);
 	}
 
-	return nullptr;
+	return null_ptr;
 }
 
-std::shared_ptr<fs::device_base> fs::set_virtual_device(const std::string& name, const std::shared_ptr<device_base>& device)
+shared_ptr<fs::device_base> fs::set_virtual_device(const std::string& name, shared_ptr<device_base> device)
 {
-	ensure(name.starts_with("//") && name[2] != '/');
-
-	return get_device_manager().set_device(name, device);
+	return get_device_manager().set_device(name, std::move(device));
 }
 
 std::string fs::get_parent_dir(const std::string& path)
@@ -593,9 +651,17 @@ bool fs::create_dir(const std::string& path)
 	}
 
 #ifdef _WIN32
-	if (!CreateDirectoryW(to_wchar(path).get(), NULL))
+	if (!CreateDirectoryW(to_wchar(path).get(), nullptr))
 	{
-		g_tls_error = to_error(GetLastError());
+		int res = GetLastError();
+
+		if (res == ERROR_ACCESS_DENIED && is_dir(path))
+		{
+			// May happen on drives
+			res = ERROR_ALREADY_EXISTS;
+		}
+
+		g_tls_error = to_error(res);
 		return false;
 	}
 
@@ -705,7 +771,7 @@ bool fs::rename(const std::string& from, const std::string& to, bool overwrite)
 				}
 
 				error1 = GetLastError();
-				CreateDirectoryW(ws2.get(), NULL); // TODO
+				CreateDirectoryW(ws2.get(), nullptr); // TODO
 			}
 			else
 			{
@@ -874,7 +940,7 @@ bool fs::truncate_file(const std::string& path, u64 length)
 
 #ifdef _WIN32
 	// Open the file
-	const auto handle = CreateFileW(to_wchar(path).get(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	const auto handle = CreateFileW(to_wchar(path).get(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (handle == INVALID_HANDLE_VALUE)
 	{
 		g_tls_error = to_error(GetLastError());
@@ -913,7 +979,7 @@ bool fs::utime(const std::string& path, s64 atime, s64 mtime)
 
 #ifdef _WIN32
 	// Open the file
-	const auto handle = CreateFileW(to_wchar(path).get(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_ATTRIBUTE_NORMAL, NULL);
+	const auto handle = CreateFileW(to_wchar(path).get(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_ATTRIBUTE_NORMAL, NULL);
 	if (handle == INVALID_HANDLE_VALUE)
 	{
 		g_tls_error = to_error(GetLastError());
@@ -1025,7 +1091,7 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 		share |= FILE_SHARE_WRITE;
 	}
 
-	const HANDLE handle = CreateFileW(to_wchar(path).get(), access, share, NULL, disp, FILE_ATTRIBUTE_NORMAL, NULL);
+	const HANDLE handle = CreateFileW(to_wchar(path).get(), access, share, nullptr, disp, FILE_ATTRIBUTE_NORMAL, NULL);
 
 	if (handle == INVALID_HANDLE_VALUE)
 	{
@@ -1092,7 +1158,7 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 			const int size = narrow<int>(count);
 
 			DWORD nread;
-			ensure(ReadFile(m_handle, buffer, size, &nread, NULL)); // "file::read"
+			ensure(ReadFile(m_handle, buffer, size, &nread, nullptr)); // "file::read"
 
 			return nread;
 		}
@@ -1103,7 +1169,7 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 			const int size = narrow<int>(count);
 
 			DWORD nwritten;
-			ensure(WriteFile(m_handle, buffer, size, &nwritten, NULL)); // "file::write"
+			ensure(WriteFile(m_handle, buffer, size, &nwritten, nullptr)); // "file::write"
 
 			return nwritten;
 		}
@@ -1301,8 +1367,19 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 			static_assert(sizeof(iovec) == sizeof(iovec_clone), "Weird iovec size");
 			static_assert(offsetof(iovec, iov_len) == offsetof(iovec_clone, iov_len), "Weird iovec::iov_len offset");
 
-			const auto result = ::writev(m_fd, reinterpret_cast<const iovec*>(buffers), buf_count);
-			ensure(result != -1); // "file::write_gather"
+			u64 result = 0;
+
+			while (buf_count)
+			{
+				iovec arg[256];
+				const auto count = std::min<u64>(buf_count, 256);
+				std::memcpy(&arg, buffers, sizeof(iovec) * count);
+				const auto added = ::writev(m_fd, arg, count);
+				ensure(added != -1); // "file::write_gather"
+				result += added;
+				buf_count -= count;
+				buffers += count;
+			}
 
 			return result;
 		}
@@ -1328,7 +1405,11 @@ fs::file::file(const void* ptr, usz size)
 		{
 		}
 
-		bool trunc(u64 length) override
+		memory_stream(const memory_stream&) = delete;
+
+		memory_stream& operator=(const memory_stream&) = delete;
+
+		bool trunc(u64) override
 		{
 			return false;
 		}
@@ -1349,7 +1430,7 @@ fs::file::file(const void* ptr, usz size)
 			return 0;
 		}
 
-		u64 write(const void* buffer, u64 count) override
+		u64 write(const void*, u64) override
 		{
 			return 0;
 		}
@@ -1416,7 +1497,7 @@ bool fs::dir::open(const std::string& path)
 
 #ifdef _WIN32
 	WIN32_FIND_DATAW found;
-	const auto handle = FindFirstFileExW(to_wchar(path + "/*").get(), FindExInfoBasic, &found, FindExSearchNameMatch, NULL, FIND_FIRST_EX_CASE_SENSITIVE | FIND_FIRST_EX_LARGE_FETCH);
+	const auto handle = FindFirstFileExW(to_wchar(path + "/*").get(), FindExInfoBasic, &found, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_CASE_SENSITIVE | FIND_FIRST_EX_LARGE_FETCH);
 
 	if (handle == INVALID_HANDLE_VALUE)
 	{
@@ -1498,6 +1579,10 @@ bool fs::dir::open(const std::string& path)
 		{
 		}
 
+		unix_dir(const unix_dir&) = delete;
+
+		unix_dir& operator=(const unix_dir&) = delete;
+
 		~unix_dir() override
 		{
 			::closedir(m_dd);
@@ -1545,6 +1630,17 @@ bool fs::dir::open(const std::string& path)
 	return true;
 }
 
+bool fs::file::strict_read_check(u64 _size, u64 type_size) const
+{
+	if (usz pos0 = pos(), size0 = size(); pos0 >= size0 || (size0 - pos0) / type_size < _size)
+	{
+		fs::g_tls_error = fs::error::inval;
+		return false;
+	}
+
+	return true;
+}
+
 const std::string& fs::get_config_dir()
 {
 	// Use magic static
@@ -1556,9 +1652,9 @@ const std::string& fs::get_config_dir()
 		wchar_t buf[32768];
 		constexpr DWORD size = static_cast<DWORD>(std::size(buf));
 		if (GetEnvironmentVariable(L"RPCS3_CONFIG_DIR", buf, size) - 1 >= size - 1 &&
-			GetModuleFileName(NULL, buf, size) - 1 >= size - 1)
+			GetModuleFileName(nullptr, buf, size) - 1 >= size - 1)
 		{
-			MessageBoxA(0, fmt::format("GetModuleFileName() failed: error %u.", GetLastError()).c_str(), "fs::get_config_dir()", MB_ICONERROR);
+			MessageBoxA(nullptr, fmt::format("GetModuleFileName() failed: error %u.", GetLastError()).c_str(), "fs::get_config_dir()", MB_ICONERROR);
 			return dir; // empty
 		}
 
@@ -1673,110 +1769,6 @@ bool fs::remove_all(const std::string& path, bool remove_root)
 	return true;
 }
 
-std::string fs::escape_path(std::string_view path)
-{
-	std::string real; real.resize(path.size());
-
-	auto get_char = [&](usz& from, usz& to, usz count)
-	{
-		std::memcpy(&real[to], &path[from], count);
-		from += count, to += count;
-	};
-
-	usz i = 0, j = -1, pos_nondelim = 0, after_delim = 0;
-
-	if (i < path.size())
-	{
-		j = 0;
-	}
-
-	for (; i < path.size();)
-	{
-		real[j] = path[i];
-#ifdef _Win32
-		if (real[j] == '\\')
-		{
-			real[j] = '/';
-		}
-#endif
-		// If the current character was preceeded by a delimiter special treatment is required:
-		// If another deleimiter is encountered, remove it (do not write it to output string)
-		// Otherwise test if it is a "." or ".." sequence.
-		if (std::exchange(after_delim, path[i] == delim[0] || path[i] == delim[1]))
-		{
-			if (!after_delim)
-			{
-				if (real[j] == '.')
-				{
-					if (i + 1 == path.size())
-					{
-						break;
-					}
-
-					get_char(i, j, 1);
-
-					switch (real[j])
-					{
-					case '.':
-					{
-						bool remove_element = true;
-						usz k = 1;
-
-						for (; k + i != path.size(); k++)
-						{
-							switch (path[i + k])
-							{
-							case '.': continue;
-							case delim[0]: case delim[1]: break;
-							default: remove_element = false; break;
-							}
-						}
-
-						if (remove_element)
-						{
-							if (i == 1u)
-							{
-								j = pos_nondelim;
-								real[j] = '\0';// Ensure termination at this posistion
-								after_delim = true;
-								i += k;
-								continue;
-							}
-						}
-
-						get_char(i, j, k);
-						continue;
-					}
-					case '/':
-					{
-						i++;
-						after_delim = true;
-						continue;
-					}
-					default: get_char(i, j, 1); continue;
-					}
-				}
-
-				pos_nondelim = j;
-				get_char(i, j, 1);
-			}
-			else
-			{
-				i++;
-			}
-		}
-		else
-		{
-			get_char(i, j, 1);
-		}
-	}
-
-	if (j != umax && (real[j] == delim[0] || real[j] == delim[1])) j--; // Do not include a delmiter at the end
-
-	real.resize(j + 1);
-	return real;
-}
-
 u64 fs::get_dir_size(const std::string& path, u64 rounding_alignment)
 {
 	u64 result = 0;
@@ -1821,8 +1813,8 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 	{
 		u64 pos = 0;
 		u64 end = 0;
-		std::vector<file> files;
-		std::map<u64, u64> ends; // Fragment End Offset -> Index
+		std::vector<file> files{};
+		std::map<u64, u64> ends{}; // Fragment End Offset -> Index
 
 		gather_stream(std::vector<fs::file> arg)
 			: files(std::move(arg))
@@ -1854,7 +1846,7 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 			return result;
 		}
 
-		bool trunc(u64 length) override
+		bool trunc(u64) override
 		{
 			return false;
 		}
@@ -1897,7 +1889,7 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 			return 0;
 		}
 
-		u64 write(const void* buffer, u64 size) override
+		u64 write(const void*, u64) override
 		{
 			return 0;
 		}

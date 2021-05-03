@@ -254,11 +254,24 @@ void fmt_class_string<u128>::format(std::string& out, u64 arg)
 {
 	// TODO: it should be supported as full-fledged integral type (with %u, %d, etc, fmt)
 	const u128& num = get_object(arg);
+
+	if (!num)
+	{
+		out += '0';
+		return;
+	}
+
 #ifdef _MSC_VER
 	fmt::append(out, "0x%016llx%016llx", num.hi, num.lo);
 #else
 	fmt::append(out, "0x%016llx%016llx", static_cast<u64>(num >> 64), static_cast<u64>(num));
 #endif
+}
+
+template <>
+void fmt_class_string<s128>::format(std::string& out, u64 arg)
+{
+	return fmt_class_string<u128>::format(out, arg);
 }
 
 template <>
@@ -344,7 +357,9 @@ struct fmt::cfmt_src
 	template <typename T>
 	T get(usz index) const
 	{
-		return *reinterpret_cast<const T*>(reinterpret_cast<const u8*>(args + index));
+		T res{};
+		std::memcpy(&res, reinterpret_cast<const u8*>(args + index), sizeof(res));
+		return res;
 	}
 
 	void skip(usz extra)
@@ -373,6 +388,8 @@ struct fmt::cfmt_src
 		TYPE(short);
 		if (std::is_signed<char>::value) TYPE(char);
 		TYPE(long);
+		TYPE(u128);
+		TYPE(s128);
 
 #undef TYPE
 
@@ -394,25 +411,28 @@ void fmt::raw_append(std::string& out, const char* fmt, const fmt_type_info* sup
 	cfmt_append(out, fmt, cfmt_src{sup, args});
 }
 
-std::string fmt::replace_first(const std::string& src, const std::string& from, const std::string& to)
+std::string fmt::replace_all(std::string_view src, std::string_view from, std::string_view to, usz count)
 {
-	auto pos = src.find(from);
+	std::string target;
+	target.reserve(src.size() + to.size());
 
-	if (pos == umax)
+	for (usz i = 0, replaced = 0; i < src.size();)
 	{
-		return src;
-	}
+		const usz pos = src.find(from, i);
 
-	return (pos ? src.substr(0, pos) + to : to) + std::string(src.c_str() + pos + from.length());
-}
+		if (pos == umax || replaced++ >= count)
+		{
+			// No match or too many encountered, append the rest of the string as is
+			target.append(src.substr(i));
+			break;
+		}
 
-std::string fmt::replace_all(const std::string& src, const std::string& from, const std::string& to)
-{
-	std::string target = src;
-	for (auto pos = target.find(from); pos != umax; pos = target.find(from, pos + 1))
-	{
-		target = (pos ? target.substr(0, pos) + to : to) + std::string(target.c_str() + pos + from.length());
-		pos += to.length();
+		// Append source until the matched string position
+		target.append(src.substr(i, pos - i));
+
+		// Replace string
+		target.append(to);
+		i = pos + from.size();
 	}
 
 	return target;
@@ -429,11 +449,10 @@ std::vector<std::string> fmt::split(std::string_view source, std::initializer_li
 
 		for (auto& separator : separators)
 		{
-			if (usz pos0 = source.find(separator, index); pos0 != umax)
+			if (usz pos0 = source.find(separator, index); pos0 < pos)
 			{
 				pos = pos0;
 				sep_size = separator.size();
-				break;
 			}
 		}
 
@@ -453,6 +472,11 @@ std::vector<std::string> fmt::split(std::string_view source, std::initializer_li
 		}
 
 		result.emplace_back(std::string(piece));
+	}
+
+	if (result.empty() && !is_skip_empty)
+	{
+		result.emplace_back();
 	}
 
 	return result;

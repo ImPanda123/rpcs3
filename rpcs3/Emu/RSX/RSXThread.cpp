@@ -2,6 +2,7 @@
 #include "RSXThread.h"
 
 #include "Emu/Cell/PPUCallback.h"
+#include "Emu/Cell/timers.hpp"
 
 #include "Common/BufferUtils.h"
 #include "Common/GLSLCommon.h"
@@ -12,6 +13,7 @@
 #include "rsx_utils.h"
 #include "gcm_printing.h"
 #include "Emu/Cell/lv2/sys_event.h"
+#include "Emu/Cell/lv2/sys_time.h"
 #include "Emu/Cell/Modules/cellGcmSys.h"
 #include "Overlays/overlay_perf_metrics.h"
 #include "Utilities/date_time.h"
@@ -36,8 +38,6 @@ rsx::frame_capture_data frame_capture;
 
 extern CellGcmOffsetTable offsetTable;
 extern thread_local std::string(*g_tls_log_prefix)();
-extern u64 sys_time_get_timebase_frequency();
-extern u64 get_timebased_time();
 
 namespace rsx
 {
@@ -390,11 +390,11 @@ namespace rsx
 
 	void thread::capture_frame(const std::string &name)
 	{
-		frame_trace_data::draw_state draw_state = {};
+		frame_trace_data::draw_state draw_state{};
 
 		draw_state.programs = get_programs();
 		draw_state.name = name;
-		frame_debug.draw_calls.push_back(draw_state);
+		frame_debug.draw_calls.emplace_back(std::move(draw_state));
 	}
 
 	void thread::begin()
@@ -506,27 +506,12 @@ namespace rsx
 
 	void thread::cpu_task()
 	{
+		while (Emu.IsReady())
 		{
-			// Wait for startup (TODO)
-			while (m_rsx_thread_exiting)
-			{
-				// Wait for external pause events
-				if (external_interrupt_lock)
-				{
-					wait_pause();
-				}
-
-				thread_ctrl::wait_for(1000);
-
-				if (is_stopped())
-				{
-					return;
-				}
-			}
-
-			on_task();
+			thread_ctrl::wait_for(1000);
 		}
 
+		on_task();
 		on_exit();
 	}
 
@@ -548,7 +533,7 @@ namespace rsx
 		g_tls_log_prefix = []
 		{
 			const auto rsx = get_current_renderer();
-			return fmt::format("RSX [0x%07x]", +rsx->ctrl->get);
+			return fmt::format("RSX [0x%07x]", rsx->ctrl ? +rsx->ctrl->get : 0);
 		};
 
 		method_registers.init();
@@ -558,11 +543,41 @@ namespace rsx
 		g_fxo->get<rsx::dma_manager>().init();
 		on_init_thread();
 
+		is_inited = true;
+		is_inited.notify_all();
+
 		if (!zcull_ctrl)
 		{
 			//Backend did not provide an implementation, provide NULL object
 			zcull_ctrl = std::make_unique<::rsx::reports::ZCULL_control>();
 		}
+
+		performance_counters.state = FIFO_state::empty;
+
+		// Wait for startup (TODO)
+		while (m_rsx_thread_exiting)
+		{
+			// Wait for external pause events
+			if (external_interrupt_lock)
+			{
+				wait_pause();
+			}
+
+			// Execute backend-local tasks first
+			do_local_task(performance_counters.state);
+
+			// Update sub-units
+			zcull_ctrl->update(this);
+
+			if (is_stopped())
+			{
+				return;
+			}
+
+			thread_ctrl::wait_for(1000);
+		}
+
+		performance_counters.state = FIFO_state::running;
 
 		fifo_ctrl = std::make_unique<::rsx::FIFO::FIFO_control>(this);
 
@@ -639,13 +654,10 @@ namespace rsx
 		// Raise priority above other threads
 		thread_ctrl::scoped_priority high_prio(+1);
 
-		if (g_cfg.core.thread_scheduler_enabled)
+		if (g_cfg.core.thread_scheduler != thread_scheduler_mode::os)
 		{
 			thread_ctrl::set_thread_affinity_mask(thread_ctrl::get_affinity_mask(thread_class::rsx));
 		}
-
-		// Round to nearest to deal with forward/reverse scaling
-		fesetround(FE_TONEAREST);
 
 		while (!test_stopped())
 		{
@@ -761,12 +773,12 @@ namespace rsx
 	* Fill buffer with vertex program constants.
 	* Buffer must be at least 512 float4 wide.
 	*/
-	void thread::fill_vertex_program_constants_data(void *buffer)
+	void thread::fill_vertex_program_constants_data(void* buffer)
 	{
 		memcpy(buffer, rsx::method_registers.transform_constants.data(), 468 * 4 * sizeof(float));
 	}
 
-	void thread::fill_fragment_state_buffer(void *buffer, const RSXFragmentProgram &fragment_program)
+	void thread::fill_fragment_state_buffer(void* buffer, const RSXFragmentProgram& /*fragment_program*/)
 	{
 		u32 rop_control = 0u;
 
@@ -842,7 +854,7 @@ namespace rsx
 		stream_vector(dst + 4, 0u, fog_mode, std::bit_cast<u32>(wpos_scale), std::bit_cast<u32>(wpos_bias));
 	}
 
-	void thread::fill_fragment_texture_parameters(void *buffer, const RSXFragmentProgram &fragment_program)
+	void thread::fill_fragment_texture_parameters(void* buffer, const RSXFragmentProgram& fragment_program)
 	{
 		// Copy only the relevant section
 		if (current_fp_metadata.referenced_textures_mask)
@@ -1147,7 +1159,7 @@ namespace rsx
 		case rsx::surface_raster_type::swizzle:
 			packed_render = true;
 			break;
-		};
+		}
 
 		if (!packed_render)
 		{
@@ -2030,40 +2042,6 @@ namespace rsx
 		m_rsx_thread_exiting = false;
 	}
 
-	GcmTileInfo *thread::find_tile(u32 offset, u32 location)
-	{
-		for (GcmTileInfo &tile : tiles)
-		{
-			if (!tile.bound || (tile.location & 1) != (location & 1))
-			{
-				continue;
-			}
-
-			if (offset >= tile.offset && offset < tile.offset + tile.size)
-			{
-				return &tile;
-			}
-		}
-
-		return nullptr;
-	}
-
-	tiled_region thread::get_tiled_address(u32 offset, u32 location)
-	{
-		u32 address = get_address(offset, location);
-
-		GcmTileInfo *tile = find_tile(offset, location);
-		u32 base = 0;
-
-		if (tile)
-		{
-			base = offset - tile->offset;
-			address = get_address(tile->offset, location);
-		}
-
-		return{ address, base, tile, vm::_ptr<u8>(address) };
-	}
-
 	std::pair<u32, u32> thread::calculate_memory_requirements(const vertex_input_layout& layout, u32 first_vertex, u32 vertex_count)
 	{
 		u32 persistent_memory_size = 0;
@@ -2169,7 +2147,8 @@ namespace rsx
 		{
 			if (layout.attribute_placement[index] == attribute_buffer_placement::none)
 			{
-				reinterpret_cast<u64*>(buffer)[index] = 0;
+				static constexpr u64 zero = 0;
+				std::memcpy(buffer + index * 2, &zero, sizeof(zero));
 				continue;
 			}
 

@@ -37,7 +37,7 @@ class patch_manager_dialog : public QDialog
 	const QString tr_all_versions = tr("All versions");
 
 public:
-	explicit patch_manager_dialog(std::shared_ptr<gui_settings> gui_settings, std::unordered_map<std::string, std::set<std::string>> games, const std::string& search_term, QWidget* parent = nullptr);
+	explicit patch_manager_dialog(std::shared_ptr<gui_settings> gui_settings, std::unordered_map<std::string, std::set<std::string>> games, const std::string& title_id, const std::string& version, QWidget* parent = nullptr);
 	~patch_manager_dialog();
 
 	int exec() override;
@@ -53,13 +53,16 @@ private:
 	void refresh(bool restore_layout = false);
 	void load_patches(bool show_error);
 	void populate_tree();
-	void save_config();
-	void update_patch_info(const gui_patch_info& info);
-	bool is_valid_file(const QMimeData& md, QStringList* drop_paths = nullptr);
-	void download_update();
+	void save_config() const;
+	void update_patch_info(const gui_patch_info& info) const;
+	static bool is_valid_file(const QMimeData& md, QStringList* drop_paths = nullptr);
+	void download_update() const;
 	bool handle_json(const QByteArray& data);
 
 	std::shared_ptr<gui_settings> m_gui_settings;
+
+	bool m_expand_current_match = false;
+	QString m_search_version;
 
 	std::unordered_map<std::string, std::set<std::string>> m_owned_games;
 	bool m_show_owned_games_only = false;

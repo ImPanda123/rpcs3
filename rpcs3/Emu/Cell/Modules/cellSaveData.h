@@ -352,6 +352,9 @@ struct SaveDataEntry
 	s64 ctime{0};
 	std::vector<uchar> iconBuf;
 	bool isNew{false};
+
+	std::string date() const;
+	std::string data_size() const;
 };
 
 class SaveDialogBase
@@ -359,5 +362,5 @@ class SaveDialogBase
 public:
 	virtual ~SaveDialogBase();
 
-	virtual s32 ShowSaveDataList(std::vector<SaveDataEntry>& save_entries, s32 focused, u32 op, vm::ptr<CellSaveDataListSet> listSet) = 0;
+	virtual s32 ShowSaveDataList(std::vector<SaveDataEntry>& save_entries, s32 focused, u32 op, vm::ptr<CellSaveDataListSet> listSet, bool enable_overlay) = 0;
 };

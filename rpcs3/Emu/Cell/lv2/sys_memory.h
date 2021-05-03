@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Emu/Memory/vm_ptr.h"
-#include "Emu/IdManager.h"
 #include "Emu/Cell/ErrorCodes.h"
 
 class cpu_thread;
@@ -26,9 +25,24 @@ enum : u64
 
 enum : u64
 {
-	SYS_MEMORY_PAGE_SIZE_1M   = 0x400ull,
+	SYS_MEMORY_PAGE_SIZE_4K   = 0x100ull,
 	SYS_MEMORY_PAGE_SIZE_64K  = 0x200ull,
+	SYS_MEMORY_PAGE_SIZE_1M   = 0x400ull,
 	SYS_MEMORY_PAGE_SIZE_MASK = 0xf00ull,
+};
+
+enum : u64
+{
+	SYS_MEMORY_GRANULARITY_64K  = 0x0000000000000200,
+	SYS_MEMORY_GRANULARITY_1M   = 0x0000000000000400,
+	SYS_MEMORY_GRANULARITY_MASK = 0x0000000000000f00,
+};
+
+enum : u64
+{
+	SYS_MEMORY_PROT_READ_WRITE = 0x0000000000040000,
+	SYS_MEMORY_PROT_READ_ONLY  = 0x0000000000080000,
+	SYS_MEMORY_PROT_MASK       = 0x00000000000f0000,
 };
 
 struct sys_memory_info_t

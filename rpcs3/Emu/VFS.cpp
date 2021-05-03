@@ -17,18 +17,18 @@
 struct vfs_directory
 {
 	// Real path (empty if root or not exists)
-	std::string path;
+	std::string path{};
 
 	// Virtual subdirectories (vector because only vector allows incomplete types)
-	std::vector<std::pair<std::string, vfs_directory>> dirs;
+	std::vector<std::pair<std::string, vfs_directory>> dirs{};
 };
 
 struct vfs_manager
 {
-	shared_mutex mutex;
+	shared_mutex mutex{};
 
 	// VFS root
-	vfs_directory root;
+	vfs_directory root{};
 };
 
 bool vfs::mount(std::string_view vpath, std::string_view path)
@@ -493,6 +493,7 @@ std::string vfs::escape(std::string_view name, bool escape_slash)
 
 				break;
 			}
+			default: break;
 			}
 
 			result += c;
@@ -735,7 +736,7 @@ bool vfs::host::rename(const std::string& from, const std::string& to, const lv2
 {
 	// Lock mount point, close file descriptors, retry
 	const auto from0 = std::string_view(from).substr(0, from.find_last_not_of(fs::delim) + 1);
-	const auto escaped_from = fs::escape_path(from);
+	const auto escaped_from = Emu.GetCallbacks().resolve_path(from);
 
 	std::lock_guard lock(mp->mutex);
 
@@ -744,12 +745,25 @@ bool vfs::host::rename(const std::string& from, const std::string& to, const lv2
 		return path.starts_with(from) && (path.size() == from.size() || path[from.size()] == fs::delim[0] || path[from.size()] == fs::delim[1]);
 	};
 
-	idm::select<lv2_fs_object, lv2_file>([&](u32 id, lv2_file& file)
+	idm::select<lv2_fs_object, lv2_file>([&](u32 /*id*/, lv2_file& file)
 	{
-		if (check_path(fs::escape_path(file.real_path)))
+		if (check_path(Emu.GetCallbacks().resolve_path(file.real_path)))
 		{
 			ensure(file.mp == mp);
+
+			if (!file.file)
+			{
+				file.restore_data.seek_pos = -1;
+				return;
+			}
+
 			file.restore_data.seek_pos = file.file.pos();
+
+			if (!(file.mp->flags & (lv2_mp_flag::read_only + lv2_mp_flag::cache)) && file.flags & CELL_FS_O_ACCMODE)
+			{
+				file.file.sync(); // For cellGameContentPermit atomicity
+			}
+
 			file.file.close(); // Actually close it!
 		}
 	});
@@ -773,12 +787,17 @@ bool vfs::host::rename(const std::string& from, const std::string& to, const lv2
 
 	const auto fs_error = fs::g_tls_error;
 
-	idm::select<lv2_fs_object, lv2_file>([&](u32 id, lv2_file& file)
+	idm::select<lv2_fs_object, lv2_file>([&](u32 /*id*/, lv2_file& file)
 	{
-		const auto escaped_real = fs::escape_path(file.real_path);
+		const auto escaped_real = Emu.GetCallbacks().resolve_path(file.real_path);
 
 		if (check_path(escaped_real))
 		{
+			if (file.restore_data.seek_pos == umax)
+			{
+				return;
+			}
+
 			// Update internal path
 			if (res)
 			{
@@ -797,7 +816,7 @@ bool vfs::host::rename(const std::string& from, const std::string& to, const lv2
 	return res;
 }
 
-bool vfs::host::unlink(const std::string& path, const std::string& dev_root)
+bool vfs::host::unlink(const std::string& path, [[maybe_unused]] const std::string& dev_root)
 {
 #ifdef _WIN32
 	if (auto device = fs::get_virtual_device(path))
@@ -831,7 +850,7 @@ bool vfs::host::unlink(const std::string& path, const std::string& dev_root)
 #endif
 }
 
-bool vfs::host::remove_all(const std::string& path, const std::string& dev_root, const lv2_fs_mount_point* mp, bool remove_root)
+bool vfs::host::remove_all(const std::string& path, [[maybe_unused]] const std::string& dev_root, [[maybe_unused]] const lv2_fs_mount_point* mp, bool remove_root)
 {
 #ifdef _WIN32
 	if (remove_root)

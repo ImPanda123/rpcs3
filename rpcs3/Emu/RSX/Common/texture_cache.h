@@ -6,7 +6,7 @@
 
 #include <unordered_map>
 
-extern u64 get_system_time();
+#include "Emu/Cell/timers.hpp"
 
 #define RSX_GCM_FORMAT_IGNORED 0
 
@@ -1226,7 +1226,7 @@ namespace rsx
 		}
 
 		template <typename ...Args>
-		void discard_framebuffer_memory_region(commandbuffer_type& cmd, const address_range& rsx_range, Args&&... extras)
+		void discard_framebuffer_memory_region(commandbuffer_type& /*cmd*/, const address_range& rsx_range, Args&&... /*extras*/)
 		{
 			if (g_cfg.video.write_color_buffers || g_cfg.video.write_depth_buffer)
 			{
@@ -1565,7 +1565,7 @@ namespace rsx
 			}
 		}
 
-		template <typename surface_store_type, typename ...Args>
+		template <typename SurfaceStoreType, typename... Args>
 		sampled_image_descriptor fast_texture_search(
 			commandbuffer_type& cmd,
 			const image_section_attributes_t& attr,
@@ -1575,7 +1575,7 @@ namespace rsx
 			const texture_cache_search_options& options,
 			const utils::address_range& memory_range,
 			rsx::texture_dimension_extended extended_dimension,
-			surface_store_type& m_rtts, Args&& ... extras)
+			SurfaceStoreType& m_rtts, Args&&... /*extras*/)
 		{
 			if (options.is_compressed_format) [[likely]]
 			{
@@ -1609,7 +1609,7 @@ namespace rsx
 					}
 				}
 
-				std::vector<typename surface_store_type::surface_overlap_info> overlapping_fbos;
+				std::vector<typename SurfaceStoreType::surface_overlap_info> overlapping_fbos;
 				std::vector<section_storage_type*> overlapping_locals;
 
 				auto fast_fbo_check = [&]() -> sampled_image_descriptor
@@ -1947,6 +1947,7 @@ namespace rsx
 				required_surface_height = tex_size / attributes.pitch;
 				attributes.slice_h = required_surface_height / attributes.depth;
 				break;
+			default: break; // TODO
 			}
 
 			if (options.is_compressed_format)
@@ -3037,12 +3038,12 @@ namespace rsx
 			}
 		}
 
-		virtual const u32 get_unreleased_textures_count() const
+		virtual u32 get_unreleased_textures_count() const
 		{
 			return m_storage.m_unreleased_texture_objects;
 		}
 
-		const u64 get_texture_memory_in_use() const
+		u64 get_texture_memory_in_use() const
 		{
 			return m_storage.m_texture_memory_in_use;
 		}
@@ -3078,17 +3079,17 @@ namespace rsx
 			return (num_flushes == 0u) ? 0.f : static_cast<f32>(m_misses_this_frame.load()) / num_flushes;
 		}
 
-		u32 get_texture_upload_calls_this_frame()
+		u32 get_texture_upload_calls_this_frame() const
 		{
 			return m_texture_upload_calls_this_frame;
 		}
 
-		u32 get_texture_upload_misses_this_frame()
+		u32 get_texture_upload_misses_this_frame() const
 		{
 			return m_texture_upload_misses_this_frame;
 		}
 
-		u32 get_texture_upload_miss_percentage()
+		u32 get_texture_upload_miss_percentage() const
 		{
 			return (m_texture_upload_calls_this_frame)? (m_texture_upload_misses_this_frame * 100 / m_texture_upload_calls_this_frame) : 0;
 		}

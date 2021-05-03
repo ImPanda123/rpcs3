@@ -9,6 +9,10 @@
 #pragma GCC diagnostic ignored "-Wall"
 #pragma GCC diagnostic ignored "-Wextra"
 #pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
+#pragma GCC diagnostic ignored "-Weffc++"
+#pragma GCC diagnostic ignored "-Wmissing-noreturn"
 #endif
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/IRBuilder.h"
@@ -25,15 +29,7 @@
 #include "util/types.hpp"
 #include "Utilities/StrFmt.h"
 #include "Utilities/BitField.h"
-#include "util/logs.hpp"
 #include "Utilities/JIT.h"
-
-#include <unordered_map>
-#include <map>
-#include <unordered_set>
-#include <set>
-#include <array>
-#include <vector>
 
 #include "util/v128.hpp"
 
@@ -66,7 +62,7 @@ struct llvm_value_t
 		return llvm::Type::getVoidTy(context);
 	}
 
-	llvm::Value* eval(llvm::IRBuilder<>* ir) const
+	llvm::Value* eval(llvm::IRBuilder<>*) const
 	{
 		return value;
 	}
@@ -202,9 +198,9 @@ struct llvm_value_t<u16> : llvm_value_t<s16>
 };
 
 template <>
-struct llvm_value_t<s32> : llvm_value_t<s8>
+struct llvm_value_t<int> : llvm_value_t<s8>
 {
-	using type = s32;
+	using type = int;
 	using base = llvm_value_t<s8>;
 	using base::base;
 
@@ -217,10 +213,10 @@ struct llvm_value_t<s32> : llvm_value_t<s8>
 };
 
 template <>
-struct llvm_value_t<u32> : llvm_value_t<s32>
+struct llvm_value_t<uint> : llvm_value_t<int>
 {
-	using type = u32;
-	using base = llvm_value_t<s32>;
+	using type = uint;
+	using base = llvm_value_t<int>;
 	using base::base;
 
 	static constexpr bool is_sint = false;
@@ -228,9 +224,35 @@ struct llvm_value_t<u32> : llvm_value_t<s32>
 };
 
 template <>
-struct llvm_value_t<s64> : llvm_value_t<s8>
+struct llvm_value_t<long> : llvm_value_t<s8>
 {
-	using type = s64;
+	using type = long;
+	using base = llvm_value_t<s8>;
+	using base::base;
+
+	static constexpr uint esize = 8 * sizeof(long);
+
+	static llvm::Type* get_type(llvm::LLVMContext& context)
+	{
+		return llvm::Type::getInt64Ty(context);
+	}
+};
+
+template <>
+struct llvm_value_t<ulong> : llvm_value_t<long>
+{
+	using type = ulong;
+	using base = llvm_value_t<long>;
+	using base::base;
+
+	static constexpr bool is_sint = false;
+	static constexpr bool is_uint = true;
+};
+
+template <>
+struct llvm_value_t<llong> : llvm_value_t<s8>
+{
+	using type = llong;
 	using base = llvm_value_t<s8>;
 	using base::base;
 
@@ -243,10 +265,10 @@ struct llvm_value_t<s64> : llvm_value_t<s8>
 };
 
 template <>
-struct llvm_value_t<u64> : llvm_value_t<s64>
+struct llvm_value_t<ullong> : llvm_value_t<llong>
 {
-	using type = u64;
-	using base = llvm_value_t<s64>;
+	using type = ullong;
+	using base = llvm_value_t<llong>;
 	using base::base;
 
 	static constexpr bool is_sint = false;
@@ -421,7 +443,7 @@ struct llvm_match_t
 		return value && ((value == args.value) && ...);
 	}
 
-	llvm::Value* eval(llvm::IRBuilder<>* ir) const
+	llvm::Value* eval(llvm::IRBuilder<>*) const
 	{
 		return value;
 	}
@@ -444,7 +466,7 @@ struct llvm_placeholder_t
 
 	using type = T;
 
-	llvm::Value* eval(llvm::IRBuilder<>* ir) const
+	llvm::Value* eval(llvm::IRBuilder<>*) const
 	{
 		return nullptr;
 	}
@@ -842,6 +864,8 @@ struct llvm_neg
 		{
 			return ir->CreateFNeg(v1);
 		}
+
+		// TODO: return value ?
 	}
 
 	llvm_match_tuple<A1> match(llvm::Value*& value) const
@@ -2424,11 +2448,14 @@ protected:
 	// Allow FMA
 	bool m_use_fma = false;
 
+	// Allow skylake-x tier AVX-512
+	bool m_use_avx512 = false;
+
 	// Allow Icelake tier AVX-512
 	bool m_use_avx512_icl = false;
 
 	// IR builder
-	llvm::IRBuilder<>* m_ir;
+	llvm::IRBuilder<>* m_ir = nullptr;
 
 	void initialize(llvm::LLVMContext& context, llvm::ExecutionEngine& engine);
 
@@ -2496,7 +2523,7 @@ public:
 	}
 
 	// Bitcast with immediate constant folding
-	llvm::Value* bitcast(llvm::Value* val, llvm::Type* type);
+	llvm::Value* bitcast(llvm::Value* val, llvm::Type* type) const;
 
 	template <typename T>
 	llvm::Value* bitcast(llvm::Value* val)

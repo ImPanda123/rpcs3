@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "texture_cache_utils.h"
 #include "Utilities/address_range.h"
-#include "Utilities/hash.h"
+#include "util/fnv_hash.hpp"
 
 namespace rsx
 {
@@ -201,7 +201,7 @@ namespace rsx
 		return (protection_strat == section_protection_strategy::lock);
 	}
 
-	bool buffered_section::sync()
+	bool buffered_section::sync() const
 	{
 		if (protection_strat == section_protection_strategy::lock || !locked)
 		{

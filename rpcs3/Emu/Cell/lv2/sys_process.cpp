@@ -22,7 +22,6 @@
 #include "sys_rwlock.h"
 #include "sys_semaphore.h"
 #include "sys_timer.h"
-#include "sys_trace.h"
 #include "sys_fs.h"
 #include "sys_vm.h"
 #include "sys_spu.h"
@@ -43,6 +42,17 @@ bool ps3_process_info_t::has_root_perm() const
 bool ps3_process_info_t::has_debug_perm() const
 {
 	return (ctrl_flags1 & (0xa << 28)) != 0;
+}
+
+// If a SELF file is of CellOS return its filename, otheriwse return an empty string 
+std::string_view ps3_process_info_t::get_cellos_appname() const
+{
+	if (!has_root_perm() || !Emu.GetTitleID().empty())
+	{
+		return {};
+	}
+
+	return std::string_view(Emu.GetBoot()).substr(Emu.GetBoot().find_last_of('/') + 1);
 }
 
 LOG_CHANNEL(sys_process);
@@ -272,7 +282,7 @@ error_code _sys_process_get_paramsfo(vm::ptr<char> buffer)
 	return CELL_OK;
 }
 
-s32 process_get_sdk_version(u32 pid, s32& ver)
+s32 process_get_sdk_version(u32 /*pid*/, s32& ver)
 {
 	// get correct SDK version for selected pid
 	ver = g_ps3_process_info.sdk_ver;

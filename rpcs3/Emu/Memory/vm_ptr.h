@@ -211,6 +211,12 @@ namespace vm
 		{
 			return vm::try_access(vm::cast(m_addr), const_cast<T*>(&_in), sizeof(T), true);
 		}
+
+		// Don't use
+		auto& raw()
+		{
+			return m_addr;
+		}
 	};
 
 	template<typename AT, typename RT, typename... T>
@@ -260,6 +266,12 @@ namespace vm
 		_ptr_base<RT(T...), u32> operator +() const
 		{
 			return vm::cast(m_addr);
+		}
+
+		// Don't use
+		auto& raw()
+		{
+			return m_addr;
 		}
 
 		// Callback; defined in PPUCallback.h, passing context is mandatory
@@ -342,75 +354,15 @@ namespace vm
 		}
 
 		template<typename T, typename AT>
-		friend bool operator ==(const null_t&, const _ptr_base<T, AT>& ptr)
+		constexpr bool operator ==(const _ptr_base<T, AT>& ptr) const
 		{
 			return !ptr;
 		}
 
 		template<typename T, typename AT>
-		friend bool operator ==(const _ptr_base<T, AT>& ptr, const null_t&)
+		constexpr bool operator <(const _ptr_base<T, AT>& ptr) const
 		{
-			return !ptr;
-		}
-
-		template<typename T, typename AT>
-		friend bool operator !=(const null_t&, const _ptr_base<T, AT>& ptr)
-		{
-			return ptr.operator bool();
-		}
-
-		template<typename T, typename AT>
-		friend bool operator !=(const _ptr_base<T, AT>& ptr, const null_t&)
-		{
-			return ptr.operator bool();
-		}
-
-		template<typename T, typename AT>
-		friend bool operator <(const null_t&, const _ptr_base<T, AT>& ptr)
-		{
-			return ptr.operator bool();
-		}
-
-		template<typename T, typename AT>
-		friend bool operator <(const _ptr_base<T, AT>&, const null_t&)
-		{
-			return false;
-		}
-
-		template<typename T, typename AT>
-		friend bool operator <=(const null_t&, const _ptr_base<T, AT>&)
-		{
-			return true;
-		}
-
-		template<typename T, typename AT>
-		friend bool operator <=(const _ptr_base<T, AT>& ptr, const null_t&)
-		{
-			return !ptr.operator bool();
-		}
-
-		template<typename T, typename AT>
-		friend bool operator >(const null_t&, const _ptr_base<T, AT>&)
-		{
-			return false;
-		}
-
-		template<typename T, typename AT>
-		friend bool operator >(const _ptr_base<T, AT>& ptr, const null_t&)
-		{
-			return ptr.operator bool();
-		}
-
-		template<typename T, typename AT>
-		friend bool operator >=(const null_t&, const _ptr_base<T, AT>& ptr)
-		{
-			return !ptr;
-		}
-
-		template<typename T, typename AT>
-		friend bool operator >=(const _ptr_base<T, AT>&, const null_t&)
-		{
-			return true;
+			return 0 < ptr.addr();
 		}
 	};
 
@@ -422,12 +374,6 @@ template<typename T1, typename AT1, typename T2, typename AT2>
 inline vm::if_comparable_t<T1, T2, bool> operator ==(const vm::_ptr_base<T1, AT1>& left, const vm::_ptr_base<T2, AT2>& right)
 {
 	return left.addr() == right.addr();
-}
-
-template<typename T1, typename AT1, typename T2, typename AT2>
-inline vm::if_comparable_t<T1, T2, bool> operator !=(const vm::_ptr_base<T1, AT1>& left, const vm::_ptr_base<T2, AT2>& right)
-{
-	return left.addr() != right.addr();
 }
 
 template<typename T1, typename AT1, typename T2, typename AT2>

@@ -5,8 +5,6 @@
 #include "util/shared_ptr.hpp"
 
 #include <string>
-#include <memory>
-#include <string_view>
 
 #include "mutex.h"
 #include "lockless.h"
@@ -44,7 +42,7 @@ class named_thread;
 
 class thread_base;
 
-template <typename Ctx, typename X = void, typename... Args>
+template <typename Ctx, typename... Args>
 struct result_storage
 {
 	static constexpr bool empty = true;
@@ -52,8 +50,8 @@ struct result_storage
 	using type = void;
 };
 
-template <typename Ctx, typename... Args>
-struct result_storage<Ctx, std::enable_if_t<!std::is_void_v<std::invoke_result_t<Ctx, Args&&...>>>, Args...>
+template <typename Ctx, typename... Args> requires (!std::is_void_v<std::invoke_result_t<Ctx, Args&&...>>)
+struct result_storage<Ctx, Args...>
 {
 	using T = std::invoke_result_t<Ctx, Args&&...>;
 
@@ -86,6 +84,12 @@ struct result_storage<Ctx, std::enable_if_t<!std::is_void_v<std::invoke_result_t
 	}
 };
 
+template <typename T>
+concept NamedThreadName = requires (const T& t)
+{
+	std::string(t.thread_name);
+};
+
 // Base class for task queue (linked list)
 class thread_future
 {
@@ -111,12 +115,6 @@ public:
 		exec.wait<atomic_wait::op_ne>(nullptr);
 	}
 };
-
-template <typename T, typename = void>
-struct thread_thread_name : std::bool_constant<false> {};
-
-template <typename T>
-struct thread_thread_name<T, std::void_t<decltype(named_thread<T>::thread_name)>> : std::bool_constant<true> {};
 
 // Thread base class
 class thread_base
@@ -168,7 +166,7 @@ private:
 	friend class named_thread;
 
 protected:
-	thread_base(native_entry, std::string_view name);
+	thread_base(native_entry, std::string name);
 
 	~thread_base();
 
@@ -339,6 +337,12 @@ public:
 		}
 	};
 
+	// Get thread ID (works for all threads)
+	static u64 get_tid();
+
+	// Check whether current thread is main thread (usually Qt GUI)
+	static bool is_main();
+
 private:
 	// Miscellaneous
 	static const u64 process_affinity_mask;
@@ -475,20 +479,20 @@ class named_thread final : public Context, result_storage<Context>, thread_base
 	friend class thread_ctrl;
 
 public:
-	// Default constructor
-	template <bool Valid = std::is_default_constructible_v<Context> && thread_thread_name<Context>(), typename = std::enable_if_t<Valid>>
-	named_thread()
-		: Context()
-		, thread(trampoline, Context::thread_name)
+	// Forwarding constructor with default name (also potentially the default constructor)
+	template <typename... Args> requires (std::is_constructible_v<Context, Args&&...>) && (NamedThreadName<Context>)
+	named_thread(Args&&... args)
+		: Context(std::forward<Args>(args)...)
+		, thread(trampoline, std::string(Context::thread_name))
 	{
 		thread::start();
 	}
 
 	// Normal forwarding constructor
-	template <typename... Args, typename = std::enable_if_t<std::is_constructible_v<Context, Args&&...>>>
-	named_thread(std::string_view name, Args&&... args)
+	template <typename... Args> requires (std::is_constructible_v<Context, Args&&...>)
+	named_thread(std::string name, Args&&... args)
 		: Context(std::forward<Args>(args)...)
-		, thread(trampoline, name)
+		, thread(trampoline, std::move(name))
 	{
 		thread::start();
 	}
@@ -496,7 +500,7 @@ public:
 	// Lambda constructor, also the implicit deduction guide candidate
 	named_thread(std::string_view name, Context&& f)
 		: Context(std::forward<Context>(f))
-		, thread(trampoline, name)
+		, thread(trampoline, std::string(name))
 	{
 		thread::start();
 	}

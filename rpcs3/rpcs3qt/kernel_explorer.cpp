@@ -9,7 +9,6 @@
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
-#include "Emu/Cell/RawSPUThread.h"
 #include "Emu/Cell/lv2/sys_lwmutex.h"
 #include "Emu/Cell/lv2/sys_lwcond.h"
 #include "Emu/Cell/lv2/sys_mutex.h"
@@ -304,7 +303,7 @@ void kernel_explorer::Update()
 
 	idm::select<lv2_obj>([&](u32 id, lv2_obj& obj)
 	{
-		auto node = find_node(m_tree, id >> 24);
+		const auto node = find_node(m_tree, id >> 24);
 		if (!node)
 		{
 			return;
@@ -361,7 +360,29 @@ void kernel_explorer::Update()
 		case SYS_EVENT_PORT_OBJECT:
 		{
 			auto& ep = static_cast<lv2_event_port&>(obj);
-			add_leaf(node, qstr(fmt::format("Event Port 0x%08x: Name: %#llx, Bound: %s", id, ep.name, lv2_event_queue::check(ep.queue))));
+			const auto queue = ep.queue.lock();
+			const auto type = ep.type == SYS_EVENT_PORT_LOCAL ? "LOCAL"sv : "IPC"sv;
+
+			if (lv2_event_queue::check(queue))
+			{
+				if (queue.get() == idm::check_unlocked<lv2_obj, lv2_event_queue>(ep.queue_id))
+				{
+					// Type must be LOCAL here, but refer to the note below for why it is showed
+					add_leaf(node, qstr(fmt::format("Event Port 0x%08x: %s, Name: %#llx, Event Queue (ID): 0x%08x", id, type, ep.name, ep.queue_id)));
+					break;
+				}
+
+				if (queue == lv2_event_queue::find(queue->key))
+				{
+					// There are cases in which the attached queue by ID also has an IPC
+					// And the ID was destroyed but another was created for that same IPC
+					// So show event port type as well here because it not guaranteed to be IPC 
+					add_leaf(node, qstr(fmt::format("Event Port 0x%08x: %s, Name: %#llx, Event Queue (IPC): %s", id, type, ep.name, queue->key)));
+					break;
+				}
+			}
+
+			add_leaf(node, qstr(fmt::format("Event Port 0x%08x: %s, Name: %#llx, Unbound", id, type, ep.name)));
 			break;
 		}
 		case SYS_TRACE_OBJECT:
@@ -705,7 +726,7 @@ void kernel_explorer::Update()
 			}
 		}
 	}
-	while (0);
+	while (false);
 
 	idm::select<lv2_fs_object>([&](u32 id, lv2_fs_object& fo)
 	{
@@ -726,7 +747,7 @@ void kernel_explorer::Update()
 				continue;
 			}
 
-			switch (int type = node->data(0, kernel_item_role::type_role).toInt())
+			switch (const int type = node->data(0, kernel_item_role::type_role).toInt())
 			{
 			case kernel_item_type::leaf:
 			{

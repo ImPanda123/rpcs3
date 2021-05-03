@@ -1,9 +1,7 @@
 #pragma once
 
-#include "Emu/GameInfo.h"
-
+#include "game_list.h"
 #include "custom_dock_widget.h"
-#include "game_compatibility.h"
 #include "gui_save.h"
 
 #include <QMainWindow>
@@ -14,26 +12,10 @@
 
 #include <memory>
 
-class game_list;
 class game_list_grid;
 class gui_settings;
 class emu_settings;
 class persistent_settings;
-
-/* Having the icons associated with the game info simplifies logic internally */
-struct gui_game_info
-{
-	GameInfo info;
-	QString localized_category;
-	compat::status compat;
-	QPixmap icon;
-	QPixmap pxmap;
-	bool hasCustomConfig;
-	bool hasCustomPadConfig;
-};
-
-typedef std::shared_ptr<gui_game_info> game_info;
-Q_DECLARE_METATYPE(game_info)
 
 class game_list_frame : public custom_dock_widget
 {
@@ -44,10 +26,10 @@ public:
 	~game_list_frame();
 
 	/** Fix columns with width smaller than the minimal section size */
-	void FixNarrowColumns();
+	void FixNarrowColumns() const;
 
 	/** Resizes the columns to their contents and adds a small spacing */
-	void ResizeColumnsToContents(int spacing = 20);
+	void ResizeColumnsToContents(int spacing = 20) const;
 
 	/** Refresh the gamelist with/without loading game data from files. Public so that main frame can refresh after vfs or install */
 	void Refresh(const bool from_drive = false, const bool scroll_after = true);
@@ -69,7 +51,7 @@ public:
 
 	void SetShowHidden(bool show);
 
-	game_compatibility* GetGameCompatibility() const { return m_game_compat; };
+	game_compatibility* GetGameCompatibility() const { return m_game_compat; }
 
 	QList<game_info> GetGameInfo() const;
 
@@ -86,6 +68,8 @@ public Q_SLOTS:
 	void SetListMode(const bool& is_list);
 	void SetSearchText(const QString& text);
 	void SetShowCompatibilityInGrid(bool show);
+	void SetShowCustomIcons(bool show);
+	void SetPlayHoverGifs(bool play);
 
 private Q_SLOTS:
 	void OnColClicked(int col);
@@ -104,30 +88,30 @@ protected:
 	void resizeEvent(QResizeEvent *event) override;
 	bool eventFilter(QObject *object, QEvent *event) override;
 private:
-	QPixmap PaintedPixmap(const QPixmap& icon, bool paint_config_icon = false, bool paint_pad_config_icon = false, const QColor& color = QColor());
-	QColor getGridCompatibilityColor(const QString& string);
-	void ShowCustomConfigIcon(game_info game);
+	QPixmap PaintedPixmap(const QPixmap& icon, bool paint_config_icon = false, bool paint_pad_config_icon = false, const QColor& color = QColor()) const;
+	QColor getGridCompatibilityColor(const QString& string) const;
+	void ShowCustomConfigIcon(const game_info& game);
 	void PopulateGameList();
 	void PopulateGameGrid(int maxCols, const QSize& image_size, const QColor& image_color);
 	bool IsEntryVisible(const game_info& game);
-	void SortGameList();
+	void SortGameList() const;
 	bool SearchMatchesApp(const QString& name, const QString& serial) const;
 
-	bool RemoveCustomConfiguration(const std::string& title_id, game_info game = nullptr, bool is_interactive = false);
-	bool RemoveCustomPadConfiguration(const std::string& title_id, game_info game = nullptr, bool is_interactive = false);
+	bool RemoveCustomConfiguration(const std::string& title_id, const game_info& game = nullptr, bool is_interactive = false);
+	bool RemoveCustomPadConfiguration(const std::string& title_id, const game_info& game = nullptr, bool is_interactive = false);
 	bool RemoveShadersCache(const std::string& base_dir, bool is_interactive = false);
 	bool RemovePPUCache(const std::string& base_dir, bool is_interactive = false);
 	bool RemoveSPUCache(const std::string& base_dir, bool is_interactive = false);
-	bool CreatePPUCache(const game_info& game);
+	static bool CreatePPUCache(const game_info& game);
 
-	QString GetLastPlayedBySerial(const QString& serial);
-	std::string GetCacheDirBySerial(const std::string& serial);
-	std::string GetDataDirBySerial(const std::string& serial);
+	QString GetLastPlayedBySerial(const QString& serial) const;
+	static std::string GetCacheDirBySerial(const std::string& serial);
+	static std::string GetDataDirBySerial(const std::string& serial);
 	std::string CurrentSelectionPath();
-	std::string GetStringFromU32(const u32& key, const std::map<u32, QString>& map, bool combined = false);
+	static std::string GetStringFromU32(const u32& key, const std::map<u32, QString>& map, bool combined = false);
 
-	game_info GetGameInfoByMode(const QTableWidgetItem* item);
-	game_info GetGameInfoFromItem(const QTableWidgetItem* item);
+	game_info GetGameInfoByMode(const QTableWidgetItem* item) const;
+	static game_info GetGameInfoFromItem(const QTableWidgetItem* item);
 
 	// Which widget we are displaying depends on if we are in grid or list mode.
 	QMainWindow* m_game_dock = nullptr;
@@ -172,4 +156,6 @@ private:
 	qreal m_margin_factor;
 	qreal m_text_factor;
 	bool m_draw_compat_status_to_grid = false;
+	bool m_show_custom_icons = true;
+	bool m_play_hover_movies = true;
 };

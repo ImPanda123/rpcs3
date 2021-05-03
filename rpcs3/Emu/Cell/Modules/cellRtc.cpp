@@ -584,8 +584,8 @@ error_code cellRtcParseRfc3339(vm::ptr<CellRtcTick> pUtc, vm::cptr<char> pszDate
 
 	char char_1 = pszDateTime[1];
 	char char_2 = pszDateTime[2];
-	char char_3 = pszDateTime[3];
-	if (((((((*pszDateTime - 0x30U) < 10) && ('/' < char_1)) && (char_1 < ':')) && (('/' < char_2 && (char_2 < ':')))) && ('/' < char_3)) && (char_3 < ':'))
+	const char char_3 = pszDateTime[3];
+	if (((*pszDateTime - 0x30U) < 10) && ('/' < char_1) && (char_1 < ':') && ('/' < char_2) && (char_2 < ':') && ('/' < char_3) && (char_3 < ':'))
 	{
 		date_time->year = (char_2 << 1) + (char_2 << 3) + *pszDateTime * 1000 + char_1 * 100 + char_3 + 0x2fb0;
 	}
@@ -1129,7 +1129,8 @@ error_code cellRtcConvertLocalTimeToUtc(vm::cptr<CellRtcTick> pLocalTime, vm::pt
 
 error_code cellRtcGetCurrentSecureTick(vm::ptr<CellRtcTick> tick)
 {
-	UNIMPLEMENTED_FUNC(cellRtc);
+	cellRtc.todo("cellRtcGetCurrentSecureTick(*0x%x)", tick);
+
 	return CELL_OK;
 }
 

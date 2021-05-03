@@ -160,6 +160,11 @@ void fmt_class_string<SpursWorkloadState>::format(std::string& out, u64 arg)
 
 error_code sys_spu_image_close(ppu_thread&, vm::ptr<sys_spu_image> img);
 
+// Temporarily
+#ifndef _MSC_VER
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
+
 //----------------------------------------------------------------------------
 // Function prototypes
 //----------------------------------------------------------------------------
@@ -3785,7 +3790,7 @@ s32 _spurs::create_taskset(ppu_thread& ppu, vm::ptr<CellSpurs> spurs, vm::ptr<Ce
 	taskset->size = size;
 
 	vm::var<CellSpursWorkloadAttribute> wkl_attr;
-	_cellSpursWorkloadAttributeInitialize(ppu, wkl_attr, 1, 0x330000, vm::cptr<void>::make(SPURS_IMG_ADDR_TASKSET_PM), 0x1E40 /*pm_size*/,
+	_cellSpursWorkloadAttributeInitialize(ppu, wkl_attr, 1, SYS_PROCESS_PARAM_VERSION_330_0, vm::cptr<void>::make(SPURS_IMG_ADDR_TASKSET_PM), 0x1E40 /*pm_size*/,
 		taskset.addr(), priority, 8, max_contention);
 	// TODO: Check return code
 
@@ -4528,7 +4533,7 @@ s32 _spurs::create_job_chain(ppu_thread& ppu, vm::ptr<CellSpurs> spurs, vm::ptr<
 	vm::var<u32> wid;
 
 	// TODO
-	if (auto err = _cellSpursWorkloadAttributeInitialize(ppu, +attr_wkl, 1, 0x330000, vm::null, 0, jobChain.addr(), prio, 1, maxContention))
+	if (auto err = _cellSpursWorkloadAttributeInitialize(ppu, +attr_wkl, 1, SYS_PROCESS_PARAM_VERSION_330_0, vm::null, 0, jobChain.addr(), prio, 1, maxContention))
 	{
 		return as_job_error(err);
 	}

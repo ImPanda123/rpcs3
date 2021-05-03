@@ -2,7 +2,6 @@
 #include "Emu/System.h"
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/Cell/PPUThread.h"
-#include "Emu/Cell/RawSPUThread.h"
 #include "Emu/Cell/lv2/sys_mmapper.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/RSX/RSXThread.h"
@@ -10,6 +9,7 @@
 #include "Utilities/JIT.h"
 #include <thread>
 #include <sstream>
+#include <cfenv>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -94,7 +94,7 @@ thread_local bool g_tls_access_violation_recovered = false;
 extern thread_local std::string(*g_tls_log_prefix)();
 
 // Report error and call std::abort(), defined in main.cpp
-[[noreturn]] void report_fatal_error(const std::string&);
+[[noreturn]] void report_fatal_error(std::string_view);
 
 template <>
 void fmt_class_string<std::thread::id>::format(std::string& out, u64 arg)
@@ -450,7 +450,7 @@ void decode_x64_reg_op(const u8* code, x64_op_t& out_op, x64_reg_t& out_reg, usz
 		}
 		case 0x7f:
 		{
-			if ((repe && !oso) || (!repe && oso)) // MOVDQU/MOVDQA xmm/m, xmm
+			if (repe != oso) // MOVDQU/MOVDQA xmm/m, xmm
 			{
 				out_op = X64OP_STORE;
 				out_reg = get_modRM_reg_xmm(code, rex);
@@ -1261,7 +1261,9 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 	{
 		if (op == X64OP_NONE)
 		{
-			sig_log.error("decode_x64_reg_op(%p): unsupported opcode: %s", code, *reinterpret_cast<const be_t<v128, 1>*>(code));
+			be_t<v128> dump;
+			std::memcpy(&dump, code, sizeof(dump));
+			sig_log.error("decode_x64_reg_op(%p): unsupported opcode: %s", code, dump);
 		}
 	};
 
@@ -1407,9 +1409,9 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 			return false;
 		}
 
-		if (area->flags & 0x100 || (is_writing && vm::check_addr(addr)))
+		if (vm::reader_lock rlock; vm::check_addr(addr, 0))
 		{
-			// For 4kb pages or read only memory
+			// For allocated memory with protection lower than required (such as protection::no or read-only while writing to it)
 			utils::memory_protect(vm::base(addr & -0x1000), 0x1000, utils::protection::rw);
 			return true;
 		}
@@ -1607,6 +1609,22 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 	return true;
 }
 
+static void append_thread_name(std::string& msg)
+{
+	if (thread_ctrl::get_current())
+	{
+		fmt::append(msg, "Emu Thread Name: '%s'.\n", thread_ctrl::get_name());
+	}
+	else if (thread_ctrl::is_main())
+	{
+		fmt::append(msg, "Thread: Main Thread.\n");
+	}
+	else
+	{
+		fmt::append(msg, "Thread id = %s.\n", std::this_thread::get_id());
+	}
+}
+
 #ifdef _WIN32
 
 static LONG exception_handler(PEXCEPTION_POINTERS pExp) noexcept
@@ -1668,14 +1686,7 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 		}
 	}
 
-	if (thread_ctrl::get_current())
-	{
-		fmt::append(msg, "Emu Thread Name: '%s'.\n", thread_ctrl::get_name());
-	}
-
-	// TODO: Report full thread name if not an emu thread
-
-	fmt::append(msg, "Thread id = %s.\n", std::this_thread::get_id());
+	append_thread_name(msg);
 
 	std::vector<HMODULE> modules;
 	for (DWORD size = 256; modules.size() != size; size /= sizeof(HMODULE))
@@ -1752,7 +1763,7 @@ const bool s_exception_handler_set = []() -> bool
 
 #else
 
-static void signal_handler(int sig, siginfo_t* info, void* uct) noexcept
+static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 {
 	x64_context* context = static_cast<ucontext_t*>(uct);
 
@@ -1793,19 +1804,11 @@ static void signal_handler(int sig, siginfo_t* info, void* uct) noexcept
 
 	std::string msg = fmt::format("Segfault %s location %p at %p.\n", cause, info->si_addr, RIP(context));
 
-	if (thread_ctrl::get_current())
-	{
-		fmt::append(msg, "Emu Thread Name: '%s'.\n", thread_ctrl::get_name());
-	}
-
-	// TODO: Report full thread name if not an emu thread
-
-	fmt::append(msg, "Thread id = %s.\n", std::this_thread::get_id());
+	append_thread_name(msg);
 
 	if (IsDebuggerPresent())
 	{
 		sys_log.fatal("\n%s", msg);
-		std::fprintf(stderr, "%s\n", msg.c_str());
 
 		sys_log.notice("\n%s", dump_useful_thread_info());
 
@@ -2078,6 +2081,8 @@ thread_base::native_entry thread_base::finalize(u64 _self) noexcept
 
 	thread_ctrl::set_thread_affinity_mask(0);
 
+	std::fesetround(FE_TONEAREST);
+
 	static constexpr u64 s_stop_bit = 0x8000'0000'0000'0000ull;
 
 	static atomic_t<u64> s_pool_ctr = []
@@ -2311,9 +2316,9 @@ std::string thread_ctrl::get_name_cached()
 	return *name_cache;
 }
 
-thread_base::thread_base(native_entry entry, std::string_view name)
+thread_base::thread_base(native_entry entry, std::string name)
 	: entry_point(entry)
-	, m_tname(make_single<std::string>(name))
+	, m_tname(make_single_value(std::move(name)))
 {
 }
 
@@ -2504,12 +2509,9 @@ void thread_base::exec()
 
 	sig_log.fatal("Thread terminated due to fatal error: %s", reason);
 
-	std::fprintf(stderr, "Thread '%s' terminated due to fatal error: %s\n", g_tls_log_prefix().c_str(), std::string(reason).c_str());
-
 #ifdef _WIN32
 	if (IsDebuggerPresent())
 	{
-		OutputDebugStringA(fmt::format("Thread '%s' terminated due to fatal error: %s\n", g_tls_log_prefix(), reason).c_str());
 		__debugbreak();
 	}
 #else
@@ -2540,8 +2542,7 @@ void thread_base::exec()
 #endif
 	}
 
-	// Assume main thread
-	report_fatal_error(std::string(reason));
+	report_fatal_error(reason);
 }
 
 void thread_ctrl::detect_cpu_layout()
@@ -2706,9 +2707,18 @@ u64 thread_ctrl::get_affinity_mask(thread_class group)
 						break;
 					case 16:
 						// 1700, 1800, 2700, TR 1900X family
-						ppu_mask = 0b1111111100000000;
-						spu_mask = ppu_mask;
-						rsx_mask = 0b0000000000111100;
+						if (g_cfg.core.thread_scheduler == thread_scheduler_mode::alt)
+						{
+							ppu_mask = 0b0010000010000000;
+							spu_mask = 0b0000101010101010;
+							rsx_mask = 0b1000000000000000;
+						}
+						else
+						{
+							ppu_mask = 0b1111111100000000;
+							spu_mask = ppu_mask;
+							rsx_mask = 0b0000000000111100;
+						}
 						break;
 					case 12:
 						// 1600, 2600 family, Assign threads 3-12
@@ -2736,15 +2746,37 @@ u64 thread_ctrl::get_affinity_mask(thread_class group)
 					spu_mask = 0b000000111111000000000000;
 					rsx_mask = 0b000000000000111111000000;
 					break;
-				default:
-					if (thread_count >= 16)
+				case 16:
+					// 5800X
+					if (g_cfg.core.thread_scheduler == thread_scheduler_mode::alt)
+					{
+						ppu_mask = 0b0000000011110000;
+						spu_mask = 0b1111111100000000;
+						rsx_mask = 0b0000000000001111;
+					}
+					else
 					{
 						// Verified by more than one windows user on 16-thread CPU
 						ppu_mask = spu_mask = rsx_mask = (0b10101010101010101010101010101010 & all_cores_mask);
 					}
+					break;
+				case 12:
+					// 5600X
+					if (g_cfg.core.thread_scheduler == thread_scheduler_mode::alt)
+					{
+						ppu_mask = 0b000000001100;
+						spu_mask = 0b111111110000;
+						rsx_mask = 0b000000000011;
+					}
 					else
 					{
 						ppu_mask = spu_mask = rsx_mask = all_cores_mask;
+					}
+					break;
+				default:
+					if (thread_count > 24)
+					{
+						ppu_mask = spu_mask = rsx_mask = (0b10101010101010101010101010101010 & all_cores_mask);
 					}
 					break;
 				}
@@ -2771,23 +2803,8 @@ u64 thread_ctrl::get_affinity_mask(thread_class group)
 		}
 		case native_core_arrangement::intel_ht:
 		{
-			/* This has been disabled as it seems to degrade performance instead of improving it.
-			if (thread_count <= 4)
-			{
-				//i3 or worse
-				switch (group)
-				{
-				case thread_class::rsx:
-				case thread_class::ppu:
-					return (0b0101 & all_cores_mask);
-				case thread_class::spu:
-					return (0b1010 & all_cores_mask);
-				case thread_class::general:
-					return all_cores_mask;
-				}
-			}
-			*/
-
+			if (thread_count >= 12 && g_cfg.core.thread_scheduler == thread_scheduler_mode::alt)
+				return (0b10101010101010101010101010101010 & all_cores_mask); // Potentially improves performance by mimicking HT off
 			return all_cores_mask;
 		}
 		}
@@ -2967,9 +2984,12 @@ std::pair<void*, usz> thread_ctrl::get_thread_stack()
 	void* saddr = 0;
 	usz ssize = 0;
 	pthread_attr_t attr;
-#ifdef __linux__
+#if defined(__linux__)
 	pthread_getattr_np(pthread_self(), &attr);
 	pthread_attr_getstack(&attr, &saddr, &ssize);
+#elif defined(__APPLE__)
+	saddr = pthread_get_stackaddr_np(pthread_self());
+	ssize = pthread_get_stacksize_np(pthread_self());
 #else
 	pthread_attr_get_np(pthread_self(), &attr);
 	pthread_attr_getstackaddr(&attr, &saddr);
@@ -2977,4 +2997,18 @@ std::pair<void*, usz> thread_ctrl::get_thread_stack()
 #endif
 #endif
 	return {saddr, ssize};
+}
+
+u64 thread_ctrl::get_tid()
+{
+#ifdef _WIN32
+	return GetCurrentThreadId();
+#else
+	return reinterpret_cast<u64>(pthread_self());
+#endif
+}
+
+bool thread_ctrl::is_main()
+{
+	return get_tid() == utils::main_tid;
 }

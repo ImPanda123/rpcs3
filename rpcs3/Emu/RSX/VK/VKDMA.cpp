@@ -227,17 +227,17 @@ namespace vk
 		// NOP
 	}
 
-	void dma_block_EXT::flush(const utils::address_range& range)
+	void dma_block_EXT::flush(const utils::address_range&)
 	{
 		// NOP
 	}
 
-	void dma_block_EXT::load(const utils::address_range& range)
+	void dma_block_EXT::load(const utils::address_range&)
 	{
 		// NOP
 	}
 
-	bool test_host_pointer(u32 base_address, usz length)
+	bool test_host_pointer([[maybe_unused]] u32 base_address, [[maybe_unused]] usz length)
 	{
 #ifdef _WIN32
 		MEMORY_BASIC_INFORMATION mem_info;
@@ -256,15 +256,34 @@ namespace vk
 	void create_dma_block(std::unique_ptr<dma_block>& block, u32 base_address, usz expected_length)
 	{
 		const auto vendor = g_render_device->gpu().get_driver_vendor();
+		[[maybe_unused]] const auto chip  = g_render_device->gpu().get_chip_class();
 
-#ifdef _WIN32
-		const bool allow_host_buffers = (vendor == driver_vendor::NVIDIA) ?
-			//test_host_pointer(base_address, expected_length) :
-			rsx::get_location(base_address) == CELL_GCM_LOCATION_LOCAL : // NVIDIA workaround
-			true;
-#else
+#if defined(_WIN32)
+		bool allow_host_buffers;
+		if (vendor == driver_vendor::NVIDIA)
+		{
+			if (g_cfg.video.vk.asynchronous_texture_streaming)
+			{
+				allow_host_buffers = (chip != chip_class::NV_mobile_kepler) ?
+					test_host_pointer(base_address, expected_length) :
+					false;
+			}
+			else
+			{
+				allow_host_buffers = false;
+			}
+		}
+		else
+		{
+			allow_host_buffers = true;
+		}
+#elif defined(__linux__)
 		// Anything running on AMDGPU kernel driver will not work due to the check for fd-backed memory allocations
 		const bool allow_host_buffers = (vendor != driver_vendor::AMD && vendor != driver_vendor::RADV);
+#else
+		// Anything running on AMDGPU kernel driver will not work due to the check for fd-backed memory allocations
+		// Intel chipsets woulf fail in most cases and DRM_IOCTL_i915_GEM_USERPTR unimplemented
+		const bool allow_host_buffers = (vendor != driver_vendor::AMD && vendor != driver_vendor::RADV && vendor != driver_vendor::INTEL);
 #endif
 		if (allow_host_buffers && g_render_device->get_external_memory_host_support())
 		{

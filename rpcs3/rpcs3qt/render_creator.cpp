@@ -31,43 +31,52 @@ render_creator::render_creator(QObject *parent) : QObject(parent)
 
 	static std::mutex mtx;
 	static std::condition_variable cond;
-	static bool thread_running = true;
-	static bool device_found = false;
+	static bool work_done = false;
 
-	static QStringList compatible_gpus;
-
-	std::thread enum_thread = std::thread([&]
+	auto enum_thread_v = new named_thread("Vulkan Device Enumeration Thread"sv, [&, adapters = &this->vulkan_adapters]()
 	{
 		thread_ctrl::scoped_priority low_prio(-1);
 
 		vk::instance device_enum_context;
+
+		std::unique_lock lock(mtx, std::defer_lock);
+
 		if (device_enum_context.create("RPCS3", true))
 		{
 			device_enum_context.bind();
 			std::vector<vk::physical_device>& gpus = device_enum_context.enumerate_devices();
 
-			if (!gpus.empty())
-			{
-				device_found = true;
+			lock.lock();
 
+			if (!work_done) // The spawning thread gave up, do not attempt to modify vulkan_adapters
+			{
 				for (auto& gpu : gpus)
 				{
-					compatible_gpus.append(qstr(gpu.get_name()));
+					adapters->append(qstr(gpu.get_name()));
 				}
 			}
 		}
+		else
+		{
+			lock.lock();
+		}
 
-		std::scoped_lock{ mtx }, thread_running = false;
+		work_done = true;
+		lock.unlock();
 		cond.notify_all();
 	});
 
+	std::unique_ptr<std::remove_pointer_t<decltype(enum_thread_v)>> enum_thread(enum_thread_v);
+
+	if ([&]()
 	{
 		std::unique_lock lck(mtx);
-		cond.wait_for(lck, std::chrono::seconds(10), [&] { return !thread_running; });
-	}
-
-	if (thread_running)
+		cond.wait_for(lck, std::chrono::seconds(10), [&] { return work_done; });
+		return !std::exchange(work_done, true); // If thread hasn't done its job yet, it won't anymore
+	}())
 	{
+		enum_thread.release(); // Detach thread (destructor is not called)
+
 		cfg_log.error("Vulkan device enumeration timed out");
 		const auto button = QMessageBox::critical(nullptr, tr("Vulkan Check Timeout"),
 			tr("Querying for Vulkan-compatible devices is taking too long. This is usually caused by malfunctioning "
@@ -75,7 +84,6 @@ render_creator::render_creator(QObject *parent) : QObject(parent)
 				"Selecting ignore starts the emulator without Vulkan support."),
 			QMessageBox::Ignore | QMessageBox::Abort, QMessageBox::Abort);
 
-		enum_thread.detach();
 		if (button != QMessageBox::Ignore)
 		{
 			abort_requested = true;
@@ -86,9 +94,8 @@ render_creator::render_creator(QObject *parent) : QObject(parent)
 	}
 	else
 	{
-		supports_vulkan = device_found;
-		vulkan_adapters = std::move(compatible_gpus);
-		enum_thread.join();
+		supports_vulkan = !vulkan_adapters.isEmpty();
+		enum_thread.reset(); // Join thread
 	}
 #endif
 

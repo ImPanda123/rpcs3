@@ -20,9 +20,8 @@
 #include "Emu/Cell/SPUDisAsm.h"
 #include "Emu/Cell/SPUAnalyser.h"
 #include "Emu/Cell/SPUThread.h"
-#include "Emu/Cell/SPUInterpreter.h"
 #include "Emu/Cell/SPURecompiler.h"
-#include "Emu/Cell/RawSPUThread.h"
+#include "Emu/Cell/timers.hpp"
 
 #include <cmath>
 #include <cfenv>
@@ -133,8 +132,6 @@ static FORCE_INLINE bool cmp_rdata_avx(const __m256i* lhs, const __m256i* rhs)
 
 #ifdef _MSC_VER
 __forceinline
-#else
-__attribute__((always_inline))
 #endif
 extern bool cmp_rdata(const spu_rdata_t& _lhs, const spu_rdata_t& _rhs)
 {
@@ -189,8 +186,6 @@ static FORCE_INLINE void mov_rdata_avx(__m256i* dst, const __m256i* src)
 
 #ifdef _MSC_VER
 __forceinline
-#else
-__attribute__((always_inline))
 #endif
 extern void mov_rdata(spu_rdata_t& _dst, const spu_rdata_t& _src)
 {
@@ -285,9 +280,6 @@ extern void mov_rdata_nt(spu_rdata_t& _dst, const spu_rdata_t& _src)
 	_mm_stream_si128(reinterpret_cast<__m128i*>(_dst + 96), v2);
 	_mm_stream_si128(reinterpret_cast<__m128i*>(_dst + 112), v3);
 }
-
-extern u64 get_timebased_time();
-extern u64 get_system_time();
 
 void do_cell_atomic_128_store(u32 addr, const void* to_write);
 
@@ -1728,12 +1720,12 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 
 		if (!group)
 		{
-			ensure(vm::get(vm::spu)->falloc(vm_offset(), SPU_LS_SIZE, &shm));
+			ensure(vm::get(vm::spu)->falloc(vm_offset(), SPU_LS_SIZE, &shm, 0x200));
 		}
 		else
 		{
 			// 0x1000 indicates falloc to allocate page with no access rights in base memory
-			ensure(vm::get(vm::spu)->falloc(vm_offset(), SPU_LS_SIZE, &shm, 0x1000));
+			ensure(vm::get(vm::spu)->falloc(vm_offset(), SPU_LS_SIZE, &shm, 0x1200));
 		}
 
 		// Try to guess free area
@@ -2042,7 +2034,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				}
 			}())
 			{
-				const u64 time0 = vm::reservation_acquire(eal, size0);
+				const u64 time0 = vm::reservation_acquire(eal);
 
 				if (time0 & 127)
 				{
@@ -2107,7 +2099,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				}
 				}
 
-				if (time0 != vm::reservation_acquire(eal, size0) || (size0 == 128 && !cmp_rdata(*reinterpret_cast<spu_rdata_t*>(dst0), *reinterpret_cast<const spu_rdata_t*>(src))))
+				if (time0 != vm::reservation_acquire(eal) || (size0 == 128 && !cmp_rdata(*reinterpret_cast<spu_rdata_t*>(dst0), *reinterpret_cast<const spu_rdata_t*>(src))))
 				{
 					continue;
 				}
@@ -2162,10 +2154,10 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				}
 
 				// Lock each cache line
-				auto& res = vm::reservation_acquire(eal, size0);
+				auto& res = vm::reservation_acquire(eal);
 
 				// Lock each bit corresponding to a byte being written, using some free space in reservation memory
-				auto* bits = reinterpret_cast<atomic_t<u128>*>(vm::g_reservations + (eal & 0xff80) / 2 + 16);
+				auto* bits = utils::bless<atomic_t<u128>>(vm::g_reservations + ((eal & 0xff80) / 2 + 16));
 
 				// Get writing mask
 				const u128 wmask = (~u128{} << (eal & 127)) & (~u128{} >> (127 - ((eal + size0 - 1) & 127)));
@@ -2716,7 +2708,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		}
 
 		const auto& to_write = _ref<spu_rdata_t>(args.lsa & 0x3ff80);
-		auto& res = vm::reservation_acquire(addr, 128);
+		auto& res = vm::reservation_acquire(addr);
 
 		// TODO: Limit scope!!
 		rsx::reservation_lock rsx_lock(addr, 128);
@@ -2853,7 +2845,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		return success;
 	}())
 	{
-		vm::reservation_notifier(addr, 128).notify_all(-128);
+		vm::reservation_notifier(addr).notify_all(-128);
 		raddr = 0;
 		perf0.reset();
 		return true;
@@ -2898,7 +2890,7 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 		if (result == 0)
 		{
 			auto& sdata = *vm::get_super_ptr<spu_rdata_t>(addr);
-			auto& res = vm::reservation_acquire(addr, 128);
+			auto& res = vm::reservation_acquire(addr);
 
 			cpu_thread::suspend_all<+2>(cpu, {&res}, [&]
 			{
@@ -2958,10 +2950,10 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 	}
 
 	do_cell_atomic_128_store(addr, _ptr<spu_rdata_t>(args.lsa & 0x3ff80));
-	vm::reservation_notifier(addr, 128).notify_all(-128);
+	vm::reservation_notifier(addr).notify_all(-128);
 }
 
-void spu_thread::do_mfc(bool wait)
+void spu_thread::do_mfc(bool /*wait*/)
 {
 	u32 removed = 0;
 	u32 barrier = 0;
@@ -3112,7 +3104,7 @@ bool spu_thread::is_exec_code(u32 addr) const
 	return true;
 }
 
-u32 spu_thread::get_mfc_completed()
+u32 spu_thread::get_mfc_completed() const
 {
 	return ch_tag_mask & ~mfc_fence;
 }
@@ -3129,7 +3121,7 @@ bool spu_thread::process_mfc_cmd()
 			return false;
 		}
 
-		thread_ctrl::wait_on(state, old);;
+		thread_ctrl::wait_on(state, old);
 	}
 
 	spu::scheduler::concurrent_execution_watchdog watchdog(*this);
@@ -3153,7 +3145,7 @@ bool spu_thread::process_mfc_cmd()
 			spu_log.trace(u8"GETLLAR after fail: addr=0x%x, time=%u c", last_faddr, (perf0.get() - last_ftsc));
 		}
 
-		if (addr == last_faddr && perf0.get() - last_ftsc < 1000 && (vm::reservation_acquire(addr, 128) & -128) == last_ftime)
+		if (addr == last_faddr && perf0.get() - last_ftsc < 1000 && (vm::reservation_acquire(addr) & -128) == last_ftime)
 		{
 			rtime = last_ftime;
 			raddr = last_faddr;
@@ -3169,7 +3161,7 @@ bool spu_thread::process_mfc_cmd()
 			last_faddr = 0;
 		}
 
-		if (addr == raddr && !g_use_rtm && g_cfg.core.spu_getllar_polling_detection && rtime == vm::reservation_acquire(addr, 128) && cmp_rdata(rdata, data))
+		if (addr == raddr && !g_use_rtm && g_cfg.core.spu_getllar_polling_detection && rtime == vm::reservation_acquire(addr) && cmp_rdata(rdata, data))
 		{
 			// Spinning, might as well yield cpu resources
 			std::this_thread::yield();
@@ -3197,7 +3189,7 @@ bool spu_thread::process_mfc_cmd()
 				const bool ok = cpu_thread::if_suspended<0>(this, {&ntime}, [&]
 				{
 					// Guaranteed success
-					ntime = vm::reservation_acquire(addr, 128);
+					ntime = vm::reservation_acquire(addr);
 					mov_rdata_nt(rdata, sdata);
 				});
 
@@ -3222,7 +3214,7 @@ bool spu_thread::process_mfc_cmd()
 			}
 		}())
 		{
-			ntime = vm::reservation_acquire(addr, 128);
+			ntime = vm::reservation_acquire(addr);
 
 			if (ntime & vm::rsrv_unique_lock)
 			{
@@ -3251,7 +3243,7 @@ bool spu_thread::process_mfc_cmd()
 				mov_rdata(rdata, data);
 			}
 
-			if (u64 time0 = vm::reservation_acquire(addr, 128); (ntime & test_mask) != (time0 & test_mask))
+			if (u64 time0 = vm::reservation_acquire(addr); (ntime & test_mask) != (time0 & test_mask))
 			{
 				// Reservation data has been modified recently
 				if (time0 & vm::rsrv_unique_lock) i += 12;
@@ -3433,7 +3425,7 @@ bool spu_thread::process_mfc_cmd()
 
 			//if (g_cfg.core.mfc_debug)
 			//{
-			//  TODO: This needs a disambiguator with list elements dumping  
+			//  TODO: This needs a disambiguator with list elements dumping
 			//	auto& dump = reinterpret_cast<mfc_cmd_dump*>(vm::g_stat_addr + vm_offset())[mfc_dump_idx++ % spu_thread::max_mfc_dump_idx];
 			//	dump.cmd = ch_mfc_cmd;
 			//	dump.cmd.eah = pc;
@@ -3493,7 +3485,7 @@ bool spu_thread::process_mfc_cmd()
 		ch_mfc_cmd.cmd, ch_mfc_cmd.lsa, ch_mfc_cmd.eal, ch_mfc_cmd.tag, ch_mfc_cmd.size);
 }
 
-bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data)
+bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data) const
 {
 	if (!addr)
 	{
@@ -3501,7 +3493,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data)
 		return false;
 	}
 
-	if ((vm::reservation_acquire(addr, 128) & -128) != rtime)
+	if ((vm::reservation_acquire(addr) & -128) != rtime)
 	{
 		return true;
 	}
@@ -3887,7 +3879,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 					continue;
 				}
 
-				vm::reservation_notifier(raddr, 128).wait(rtime, -128, atomic_wait_timeout{100'000});
+				vm::reservation_notifier(raddr).wait(rtime, -128, atomic_wait_timeout{100'000});
 			}
 
 			check_state();
@@ -4681,7 +4673,8 @@ void spu_thread::halt()
 		spu_runtime::g_escape(this);
 	}
 
-	fmt::throw_exception("Halt");
+	spu_log.fatal("Halt");
+	spu_runtime::g_escape(this);
 }
 
 void spu_thread::fast_call(u32 ls_addr)
@@ -4739,7 +4732,8 @@ bool spu_thread::capture_local_storage() const
 
 	for (; pc0; pc0 -= 4)
 	{
-		const u32 op = *std::launder(reinterpret_cast<be_t<u32, 1>*>(prog.bin.data() + pc0 - 4));
+		be_t<u32> op;
+		std::memcpy(&op, prog.bin.data() + pc0 - 4, 4);
 
 		// Try to find function entry (if they are placed sequentially search for BI $LR of previous function)
 		if (!op || op == 0x35000000u || s_spu_itype.decode(op) == spu_itype::UNK)
@@ -4797,6 +4791,27 @@ spu_function_logger::spu_function_logger(spu_thread& spu, const char* func)
 {
 	spu.current_func = func;
 	spu.start_time = get_system_time();
+}
+
+spu_thread::thread_name_t::operator std::string() const
+{
+	std::string full_name = fmt::format("%s[0x%07x]", [](spu_type type) -> std::string_view
+	{
+		switch (type)
+		{
+		case spu_type::threaded: return "SPU"sv;
+		case spu_type::raw: return "RawSPU"sv;
+		case spu_type::isolated: return "Iso"sv;
+		default: fmt::throw_exception("Unreachable");
+		}
+	}(_this->get_type()), _this->lv2_id);
+
+	if (const std::string name = *_this->spu_tname.load(); !name.empty())
+	{
+		fmt::append(full_name, " %s", name);
+	}
+
+	return full_name;
 }
 
 template <>

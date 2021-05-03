@@ -1,21 +1,19 @@
 #pragma once
 
-#include <map>
 #include <unordered_map>
 #include <chrono>
 #include "Utilities/mutex.h"
 
+#include "util/asm.hpp"
+
 #ifdef _WIN32
 #include <winsock2.h>
-#include <WS2tcpip.h>
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #endif
 
-#include "Emu/Memory/vm.h"
-#include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/Modules/sceNp.h"
 #include "Emu/Cell/Modules/sceNp2.h"
 
@@ -29,7 +27,7 @@ public:
 	vec_stream() = delete;
 	vec_stream(std::vector<u8>& _vec, usz initial_index = 0)
 	    : vec(_vec)
-	    , i(initial_index){};
+	    , i(initial_index){}
 	bool is_error() const
 	{
 		return error;
@@ -45,7 +43,7 @@ public:
 			error = true;
 			return 0;
 		}
-		T res = reinterpret_cast<le_t<T>&>(vec[i]);
+		T res = *utils::bless<le_t<T, 1>>(&vec[i]);
 		i += sizeof(T);
 		return res;
 	}
@@ -59,7 +57,7 @@ public:
 		}
 		i++;
 
-		if (!empty && res.size() == 0)
+		if (!empty && res.empty())
 		{
 			error = true;
 		}
@@ -84,14 +82,14 @@ public:
 	template <typename T>
 	void insert(T value)
 	{
-		value = reinterpret_cast<le_t<T>>(value);
+		value = std::bit_cast<le_t<T>, T>(value);
 		// resize + memcpy instead?
 		for (usz index = 0; index < sizeof(T); index++)
 		{
 			vec.push_back(*(reinterpret_cast<u8*>(&value) + index));
 		}
 	}
-	void insert_string(const std::string& str)
+	void insert_string(const std::string& str) const
 	{
 		std::copy(str.begin(), str.end(), std::back_inserter(vec));
 		vec.push_back(0);
@@ -186,7 +184,7 @@ public:
 	const std::string& get_avatar_url() const
 	{
 		return avatar_url;
-	};
+	}
 
 	u32 get_addr_sig() const
 	{
@@ -218,9 +216,9 @@ protected:
 
 	bool is_error(ErrorType err) const;
 	bool error_and_disconnect(const std::string& error_mgs);
-	bool is_abort();
+	bool is_abort() const;
 
-	std::string get_wolfssl_error(int error);
+	std::string get_wolfssl_error(int error) const;
 
 protected:
 	atomic_t<bool> connected    = false;

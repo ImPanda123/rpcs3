@@ -421,3 +421,34 @@ void fmt_class_string<audio_downmix>::format(std::string& out, u64 arg)
 		return unknown;
 	});
 }
+
+template <>
+void fmt_class_string<vk_gpu_scheduler_mode>::format(std::string& out, u64 arg)
+{
+	format_enum(out, arg, [](vk_gpu_scheduler_mode value)
+	{
+		switch (value)
+		{
+		case vk_gpu_scheduler_mode::host: return "Host";
+		case vk_gpu_scheduler_mode::device: return "Device";
+		}
+
+		return unknown;
+	});
+}
+
+template <>
+void fmt_class_string<thread_scheduler_mode>::format(std::string& out, u64 arg)
+{
+	format_enum(out, arg, [](thread_scheduler_mode value)
+	{
+		switch (value)
+		{
+		case thread_scheduler_mode::old: return "RPCS3 Scheduler";
+		case thread_scheduler_mode::alt: return "RPCS3 Alternative Scheduler";
+		case thread_scheduler_mode::os: return "Operating System";
+		}
+
+		return unknown;
+	});
+}

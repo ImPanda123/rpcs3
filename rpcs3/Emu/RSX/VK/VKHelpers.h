@@ -59,7 +59,6 @@ namespace vk
 
 	template<class T>
 	T* get_compute_task();
-	void reset_compute_tasks();
 
 	void destroy_global_resources();
 	void reset_global_resources();
@@ -68,7 +67,7 @@ namespace vk
 	{
 		upload_contents_async = 1,
 		initialize_image_layout = 2,
-		preserve_image_layout = 3,
+		preserve_image_layout = 4,
 
 		// meta-flags
 		upload_contents_inline = 0,
@@ -106,8 +105,8 @@ namespace vk
 
 	void advance_completed_frame_counter();
 	void advance_frame_counter();
-	const u64 get_current_frame_id();
-	const u64 get_last_completed_frame_id();
+	u64 get_current_frame_id();
+	u64 get_last_completed_frame_id();
 
 	// Handle unexpected submit with dangling occlusion query
 	// TODO: Move queries out of the renderer!

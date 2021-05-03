@@ -7,6 +7,7 @@
 #include <utility>
 #include <chrono>
 #include <array>
+#include <tuple>
 
 using std::chrono::steady_clock;
 
@@ -80,11 +81,7 @@ using ulong  = unsigned long;
 using ullong = unsigned long long;
 using llong  = long long;
 
-#if __APPLE__
-using uptr = std::uint64_t;
-#else
 using uptr = std::uintptr_t;
-#endif
 
 using u8  = std::uint8_t;
 using u16 = std::uint16_t;
@@ -96,53 +93,6 @@ using s8  = std::int8_t;
 using s16 = std::int16_t;
 using s32 = std::int32_t;
 using s64 = std::int64_t;
-
-#if __APPLE__
-namespace std
-{
-	template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>>>
-	constexpr int countr_zero(T x) noexcept
-	{
-		if (x == 0)
-			return sizeof(T) * 8;
-		if constexpr (sizeof(T) <= sizeof(uint))
-			return __builtin_ctz(x);
-		else if constexpr (sizeof(T) <= sizeof(ulong))
-			return __builtin_ctzl(x);
-		else if constexpr (sizeof(T) <= sizeof(ullong))
-			return __builtin_ctzll(x);
-		else
-			static_assert(sizeof(T) <= sizeof(ullong));
-	}
-
-	template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>>>
-	constexpr int countr_one(T x) noexcept
-	{
-		return countr_zero<T>(~x);
-	}
-
-	template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>>>
-	constexpr int countl_zero(T x) noexcept
-	{
-		if (x == 0)
-			return sizeof(T) * 8;
-		if constexpr (sizeof(T) <= sizeof(uint))
-			return __builtin_clz(x) - (sizeof(uint) - sizeof(T)) * 8;
-		else if constexpr (sizeof(T) <= sizeof(ulong))
-			return __builtin_clzl(x) - (sizeof(ulong) - sizeof(T)) * 8;
-		else if constexpr (sizeof(T) <= sizeof(ullong))
-			return __builtin_clzll(x) - (sizeof(ullong) - sizeof(T)) * 8;
-		else
-			static_assert(sizeof(T) <= sizeof(ullong));
-	}
-
-	template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>>>
-	constexpr int countl_one(T x) noexcept
-	{
-		return countl_zero<T>(~x);
-	}
-}
-#endif
 
 // Get integral type from type size
 template <usz N>
@@ -208,22 +158,6 @@ using atomic_be_t = atomic_t<be_t<T>, Align>;
 template <typename T, usz Align = alignof(T)>
 using atomic_le_t = atomic_t<le_t<T>, Align>;
 
-// Extract T::simple_type if available, remove cv qualifiers
-template <typename T, typename = void>
-struct simple_type_helper
-{
-	using type = typename std::remove_cv<T>::type;
-};
-
-template <typename T>
-struct simple_type_helper<T, std::void_t<typename T::simple_type>>
-{
-	using type = typename T::simple_type;
-};
-
-template <typename T>
-using simple_t = typename simple_type_helper<T>::type;
-
 // Bool type equivalent
 class b8
 {
@@ -270,6 +204,7 @@ extern "C"
 	uchar _subborrow_u64(uchar, u64, u64, u64*);
 	u64 __shiftleft128(u64, u64, uchar);
 	u64 __shiftright128(u64, u64, uchar);
+	u64 _umul128(u64, u64, u64*);
 }
 
 // Unsigned 128-bit integer implementation (TODO)
@@ -314,6 +249,13 @@ struct alignas(16) u128
 	{
 		u128 value = l;
 		value -= r;
+		return value;
+	}
+
+	constexpr friend u128 operator*(const u128& l, const u128& r)
+	{
+		u128 value = l;
+		value *= r;
 		return value;
 	}
 
@@ -431,6 +373,24 @@ struct alignas(16) u128
 		return *this;
 	}
 
+	constexpr u128& operator*=(const u128& r)
+	{
+		const u64 _hi = r.hi * lo + r.lo * hi;
+
+		if (std::is_constant_evaluated())
+		{
+			hi = (lo >> 32) * (r.lo >> 32) + (((lo >> 32) * (r.lo & 0xffffffff)) >> 32) + (((r.lo >> 32) * (lo & 0xffffffff)) >> 32);
+			lo = lo * r.lo;
+		}
+		else
+		{
+			lo = _umul128(lo, r.lo, &hi);
+		}
+
+		hi += _hi;
+		return *this;
+	}
+
 	constexpr u128& operator<<=(const u128& r)
 	{
 		if (std::is_constant_evaluated())
@@ -520,39 +480,25 @@ struct get_int_impl<16>
 };
 
 // Return magic value for any unsigned type
-constexpr inline struct umax_helper
+constexpr struct umax_impl_t
 {
-	constexpr umax_helper() noexcept = default;
-
-	template <typename T, typename S = simple_t<T>, typename = std::enable_if_t<std::is_unsigned_v<S>>>
+	template <typename T> requires (std::is_unsigned_v<std::common_type_t<T>>) || (std::is_same_v<std::common_type_t<T>, u128>)
 	constexpr bool operator==(const T& rhs) const
 	{
-		return rhs == static_cast<S>(-1);
+		return rhs == static_cast<std::common_type_t<T>>(-1);
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711 && !__INTELLISENSE__
-#else
-	template <typename T>
-	friend constexpr std::enable_if_t<std::is_unsigned_v<simple_t<T>>, bool> operator==(const T& lhs, const umax_helper& rhs)
+	template <typename T> requires (std::is_unsigned_v<std::common_type_t<T>>) || (std::is_same_v<std::common_type_t<T>, u128>)
+	constexpr bool operator<(const T& rhs) const
 	{
-		return lhs == static_cast<simple_t<T>>(-1);
-	}
-#endif
-
-#if __cpp_impl_three_way_comparison >= 201711
-#else
-	template <typename T, typename S = simple_t<T>, typename = std::enable_if_t<std::is_unsigned_v<S>>>
-	constexpr bool operator!=(const T& rhs) const
-	{
-		return rhs != static_cast<S>(-1);
+		return rhs < static_cast<std::common_type_t<T>>(-1);
 	}
 
-	template <typename T>
-	friend constexpr std::enable_if_t<std::is_unsigned_v<simple_t<T>>, bool> operator!=(const T& lhs, const umax_helper& rhs)
+	template <typename T> requires (std::is_unsigned_v<std::common_type_t<T>>) || (std::is_same_v<std::common_type_t<T>, u128>)
+	constexpr operator T() const
 	{
-		return lhs != static_cast<simple_t<T>>(-1);
+		return static_cast<std::common_type_t<T>>(-1);
 	}
-#endif
 } umax;
 
 enum class f16 : u16{};
@@ -725,7 +671,7 @@ struct narrow_impl
 	static_assert(std::is_void<To>::value, "narrow_impl<> specialization not found");
 
 	// Returns true if value cannot be represented in type To
-	static constexpr bool test(const From& value)
+	static constexpr bool test(const From&)
 	{
 		// Unspecialized cases (including cast to void) always considered narrowing
 		return true;
@@ -784,8 +730,8 @@ struct narrow_impl<From, To, std::enable_if_t<std::is_signed<From>::value && std
 
 // Simple type enabled (TODO: allow for To as well)
 template <typename From, typename To>
-struct narrow_impl<From, To, std::void_t<typename From::simple_type>>
-	: narrow_impl<simple_t<From>, To>
+struct narrow_impl<From, To, std::enable_if_t<!std::is_same_v<std::common_type_t<From>, From>>>
+	: narrow_impl<std::common_type_t<From>, To>
 {
 };
 
@@ -834,3 +780,33 @@ struct value_hash
 		return static_cast<usz>(value) >> Shift;
 	}
 };
+
+template <typename... T>
+struct fill_array_t
+{
+	std::tuple<T...> args;
+
+	template <typename V, usz Num>
+	constexpr std::unwrap_reference_t<V> get() const
+	{
+		return std::get<Num>(args);
+	}
+
+	template <typename U, usz N, usz... M, usz... Idx>
+	constexpr std::array<U, N> fill(std::index_sequence<M...>, std::index_sequence<Idx...>) const
+	{
+		return{(static_cast<void>(Idx), U(get<T, M>()...))...};
+	}
+
+	template <typename U, usz N>
+	constexpr operator std::array<U, N>() const
+	{
+		return fill<U, N>(std::make_index_sequence<sizeof...(T)>(), std::make_index_sequence<N>());
+	}
+};
+
+template <typename... T>
+constexpr auto fill_array(const T&... args)
+{
+	return fill_array_t<T...>{{args...}};
+}
